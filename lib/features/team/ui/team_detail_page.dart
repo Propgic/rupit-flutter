@@ -24,17 +24,30 @@ class TeamDetailPage extends ConsumerWidget {
   }
 
   Future<void> _reset(BuildContext context, WidgetRef ref) async {
+    final memberName = ref.read(teamDetailProvider(id)).value?['name']?.toString() ?? 'this member';
     final pw = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Reset Password'),
-        content: TextField(controller: pw, obscureText: true, decoration: const InputDecoration(labelText: 'New Password')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Set a new password for $memberName.', style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+            const SizedBox(height: 12),
+            TextField(controller: pw, obscureText: true, decoration: const InputDecoration(labelText: 'New Password')),
+          ],
+        ),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reset'))],
       ),
     );
+    // Clear the entered password once the modal closes (cancel or submit),
+    // mirroring the web onClose that resets newPassword.
+    final password = pw.text;
+    pw.dispose();
     if (ok != true) return;
-    try { await ref.read(teamRepoProvider).resetPassword(id, pw.text); showToast('Password reset'); }
+    try { await ref.read(teamRepoProvider).resetPassword(id, password); showToast('Password reset'); }
     on ApiException catch (e) { showToast(e.message, error: true); }
   }
 

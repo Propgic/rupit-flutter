@@ -1,23 +1,35 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../auth/auth_controller.dart';
 import '../theme/app_theme.dart';
 
-class AppBottomNav extends StatelessWidget {
+class AppBottomNav extends ConsumerWidget {
   const AppBottomNav({super.key});
 
-  static const _items = [
-    ('/dashboard', Icons.home_outlined, Icons.home, 'Home'),
-    ('/loans', Icons.request_quote_outlined, Icons.request_quote, 'Loans'),
-    ('/collections', Icons.payments_outlined, Icons.payments, 'Collections'),
-    ('/profile', Icons.person_outline, Icons.person, 'Profile'),
+  // (route, outlined icon, filled icon, label, feature flag, permission).
+  // A null feature/permission means the tab is always shown. Loans is gated so an
+  // org with only chitfunds (enableLoans off) never shows it — mirrors the drawer.
+  static const _items = <(String, IconData, IconData, String, String?, String?)>[
+    ('/dashboard', Icons.home_outlined, Icons.home, 'Home', null, null),
+    ('/loans', Icons.request_quote_outlined, Icons.request_quote, 'Loans', 'enableLoans', 'loans.view'),
+    ('/collections', Icons.payments_outlined, Icons.payments, 'Collections', null, null),
+    ('/profile', Icons.person_outline, Icons.person, 'Profile', null, null),
   ];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authProvider);
+    final items = _items.where((it) {
+      if (it.$5 != null && auth.org?.feature(it.$5!) != true) return false;
+      if (it.$6 != null && !auth.hasPermission(it.$6!)) return false;
+      return true;
+    }).toList();
+
     final location = GoRouter.of(context).routeInformationProvider.value.uri.path;
     int current = 0;
-    for (var i = 0; i < _items.length; i++) {
-      if (location == _items[i].$1 || location.startsWith('${_items[i].$1}/')) {
+    for (var i = 0; i < items.length; i++) {
+      if (location == items[i].$1 || location.startsWith('${items[i].$1}/')) {
         current = i;
         break;
       }
@@ -31,10 +43,10 @@ class AppBottomNav extends StatelessWidget {
       selectedFontSize: 12,
       unselectedFontSize: 12,
       onTap: (i) {
-        final route = _items[i].$1;
+        final route = items[i].$1;
         if (location != route) context.go(route);
       },
-      items: _items
+      items: items
           .map((it) => BottomNavigationBarItem(
                 icon: Icon(it.$2),
                 activeIcon: Icon(it.$3),

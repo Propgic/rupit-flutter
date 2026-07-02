@@ -94,9 +94,14 @@ class _ChitfundTimelineState extends ConsumerState<ChitfundTimeline> {
     }
   }
 
-  // Merge per-member expected dues with that month's collection records into one
-  // roster row per member. Excludes PAYOUT and REJECTED records, and counts VERIFIED
-  // vs pending money separately so the roster stays consistent with the month totals.
+  // Merge per-member expected dues with that month's collection records into one roster row
+  // per member. The "Collected" / "Balance" / status come from the backend's waterfall
+  // allocation (dues[].paidVerified / paidPending) — a member's payments fill months oldest-
+  // first, so an overpaid month is capped at its due and the excess shows against the next
+  // month, instead of piling onto the month it was recorded against. The literal payment
+  // records still drive the "N receipts" count and the Last Payment cell (those describe the
+  // actual cash taken this month). `currentWinnerId` is this month's auction winner (gold
+  // crown); `priorWinnerIds` are members who won an earlier month (silver crown).
   List<Map<String, dynamic>> _mergeMemberRows(
     List<Map<String, dynamic>> dues,
     List<Map<String, dynamic>> payments,
@@ -128,8 +133,11 @@ class _ChitfundTimelineState extends ConsumerState<ChitfundTimeline> {
       final mid = d['memberId']?.toString() ?? '';
       final agg = byMember[mid] ?? {'verified': 0.0, 'pending': 0.0, 'count': 0, 'lastMode': null, 'lastDate': null};
       final expected = toNum(d['expectedAmount']).toDouble();
-      final verified = agg['verified'] as double;
-      final pending = agg['pending'] as double;
+      // Prefer the backend's allocated paid; fall back to the literal month sums only when
+      // it's absent (e.g. the ACCUMULATED final-month dues endpoint doesn't allocate).
+      final hasAlloc = d['paidVerified'] != null || d['paidPending'] != null;
+      final verified = hasAlloc ? toNum(d['paidVerified']).toDouble() : agg['verified'] as double;
+      final pending = hasAlloc ? toNum(d['paidPending']).toDouble() : agg['pending'] as double;
       return {
         'memberId': mid,
         'ticketNumber': d['ticketNumber'],
@@ -202,16 +210,21 @@ class _ChitfundTimelineState extends ConsumerState<ChitfundTimeline> {
     final showOutstanding = !auth.isHidden('chitfund.outstanding');
     final showPayout = !auth.isHidden('chitfund.payouts');
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (showDue || showCollected || showOutstanding || showPayout) ...[
-          _summaryGrid(totals, showDue: showDue, showCollected: showCollected, showOutstanding: showOutstanding, showPayout: showPayout),
-          const SizedBox(height: 12),
+    // Scrollable: this widget lives inside a bounded-height TabBarView, so a bare
+    // Column of month cards overflows the moment the chit has more months than fit
+    // on screen. Wrap in a scroll view (matching the other detail tabs' ListViews).
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (showDue || showCollected || showOutstanding || showPayout) ...[
+            _summaryGrid(totals, showDue: showDue, showCollected: showCollected, showOutstanding: showOutstanding, showPayout: showPayout),
+            const SizedBox(height: 12),
+          ],
+          ...rows.map((r) => _monthCard(r, chitTime,
+              showDue: showDue, showCollected: showCollected, showOutstanding: showOutstanding, showPayout: showPayout)),
         ],
-        ...rows.map((r) => _monthCard(r, chitTime,
-            showDue: showDue, showCollected: showCollected, showOutstanding: showOutstanding, showPayout: showPayout)),
-      ],
+      ),
     );
   }
 

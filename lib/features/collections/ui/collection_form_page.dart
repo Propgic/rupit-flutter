@@ -10,6 +10,8 @@ import '../../../core/utils/location.dart';
 import '../../../core/widgets/common.dart';
 import '../data/collection_repo.dart';
 import '../../loans/data/loan_repo.dart';
+import '../../chitfunds/data/chitfund_repo.dart';
+import '../../chitfunds/ui/chitfund_detail_page.dart' show openChitCollectionSheet;
 
 const _loanTypeFeatureMap = {
   'PERSONAL': 'enablePersonalLoan',
@@ -44,6 +46,13 @@ class CollectionFormPage extends ConsumerStatefulWidget {
 }
 
 class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
+  // 'LOAN' collects loan EMIs (default); 'CHITFUND' collects chit installments. The
+  // Loan/Chit toggle is only shown when both features are enabled (mirrors the web form);
+  // single-feature orgs land directly in the one they use.
+  String _source = 'LOAN';
+  final _chitSearchCtrl = TextEditingController();
+  List<Map<String, dynamic>> _chits = [];
+  bool _loadingChits = false;
   String? _loanTypeFilter;
   String? _assigneeFilter;
   List<Map<String, dynamic>> _assignees = [];
@@ -62,21 +71,73 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
   bool _saving = false;
   bool _loadingLoans = false;
   Timer? _debounce;
+  // The loan list is paged and grows as it's scrolled (infinite scroll), mirroring the web.
+  static const int _loanPageSize = 20;
+  int _loanPage = 1;
+  bool _loanHasMore = false;
+  bool _loanLoadingMore = false;
+  final _loanScrollCtrl = ScrollController();
 
   @override
   void initState() {
     super.initState();
+    final features = ref.read(authProvider).org?.features ?? const {};
+    // Chit-only orgs open straight into chit collection; loan-enabled orgs default to loans.
+    _source = (features['enableChitfund'] == true && features['enableLoans'] != true) ? 'CHITFUND' : 'LOAN';
     _loadAssignees();
-    _loadLoans();
+    if (_source == 'CHITFUND') { _loadChits(); } else { _loadLoans(); }
+    // Load the next page when the list is scrolled near the bottom.
+    _loanScrollCtrl.addListener(_onLoanScroll);
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _loanScrollCtrl.dispose();
     _searchCtrl.dispose();
+    _chitSearchCtrl.dispose();
     _amountCtrl.dispose();
     _notesCtrl.dispose();
     super.dispose();
+  }
+
+  // The field officer's active chits (scoped server-side to those assigned to them). Loaded
+  // once when chit mode is entered; searched client-side since an org has few active chits.
+  Future<void> _loadChits() async {
+    setState(() => _loadingChits = true);
+    try {
+      final res = await ref.read(chitfundRepoProvider).list(status: 'ACTIVE', limit: 200);
+      final chits = extractList(res['data'] ?? res).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      chits.sort((a, b) => (a['chitNumber']?.toString() ?? '').compareTo(b['chitNumber']?.toString() ?? ''));
+      if (mounted) setState(() => _chits = chits);
+    } catch (_) {
+      if (mounted) setState(() => _chits = const []);
+    } finally {
+      if (mounted) setState(() => _loadingChits = false);
+    }
+  }
+
+  // Fetch the chit's full detail (dividend type, member count, current month) and open the
+  // shared chit-collection sheet, which handles month/member/dues selection and recording.
+  Future<void> _selectChit(Map<String, dynamic> chit) async {
+    Map<String, dynamic> detail;
+    try {
+      detail = await ref.read(chitfundRepoProvider).get(chit['id'].toString());
+    } on ApiException catch (e) {
+      showToast(e.message, error: true);
+      return;
+    } catch (_) {
+      showToast('Could not load chit', error: true);
+      return;
+    }
+    if (!mounted) return;
+    await openChitCollectionSheet(context, ref, chitfund: detail);
+  }
+
+  void _onLoanScroll() {
+    if (_loanLoadingMore || !_loanHasMore || !_loanScrollCtrl.hasClients) return;
+    final pos = _loanScrollCtrl.position;
+    if (pos.maxScrollExtent - pos.pixels < 48) _loadLoans(page: _loanPage + 1, append: true);
   }
 
   Future<void> _loadAssignees() async {
@@ -104,31 +165,52 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
 
   void _onSearchChanged(String v) {
     _debounce?.cancel();
+    // Search/filter changes reset to the first page (debounced).
     _debounce = Timer(const Duration(milliseconds: 300), _loadLoans);
   }
 
-  Future<void> _loadLoans() async {
-    setState(() => _loadingLoans = true);
+  // The dropdown is sorted alphabetically by customer name; re-applied to the full
+  // accumulated list each time another page is appended so order stays stable.
+  void _sortLoansByName(List<Map<String, dynamic>> list) {
+    list.sort((a, b) {
+      final ac = Map<String, dynamic>.from(a['customer'] ?? {});
+      final bc = Map<String, dynamic>.from(b['customer'] ?? {});
+      final an = '${ac['firstName'] ?? ''} ${ac['lastName'] ?? ''}'.trim().toLowerCase();
+      final bn = '${bc['firstName'] ?? ''} ${bc['lastName'] ?? ''}'.trim().toLowerCase();
+      return an.compareTo(bn);
+    });
+  }
+
+  // Fetch one page of matching loans. `append` adds the next page to the existing list
+  // (infinite scroll); otherwise it replaces the list (new search/filter).
+  Future<void> _loadLoans({int page = 1, bool append = false}) async {
+    setState(() {
+      if (append) { _loanLoadingMore = true; } else { _loadingLoans = true; }
+    });
     try {
       final api = ref.read(apiClientProvider);
-      final params = <String, dynamic>{'status': 'ACTIVE', 'limit': 30};
+      final params = <String, dynamic>{'status': 'ACTIVE', 'limit': _loanPageSize, 'page': page};
       if (_searchCtrl.text.trim().length >= 2) params['search'] = _searchCtrl.text.trim();
       if (_loanTypeFilter != null) params['loanType'] = _loanTypeFilter;
       if (_assigneeFilter != null) params['assignedToId'] = _assigneeFilter;
       final res = await api.raw(() => api.dio.get('/loans', queryParameters: params));
       final body = res.data;
       final list = (body is Map && body['data'] is List ? body['data'] : body is List ? body : const []) as List;
-      final mapped = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      mapped.sort((a, b) {
-        final ac = Map<String, dynamic>.from(a['customer'] ?? {});
-        final bc = Map<String, dynamic>.from(b['customer'] ?? {});
-        final an = '${ac['firstName'] ?? ''} ${ac['lastName'] ?? ''}'.trim().toLowerCase();
-        final bn = '${bc['firstName'] ?? ''} ${bc['lastName'] ?? ''}'.trim().toLowerCase();
-        return an.compareTo(bn);
-      });
-      setState(() => _loans = mapped);
+      final fetched = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      final merged = append
+          ? <Map<String, dynamic>>[..._loans, ...fetched.where((l) => !_loans.any((p) => p['id'] == l['id']))]
+          : fetched;
+      _sortLoansByName(merged);
+      final pg = body is Map && body['pagination'] is Map ? Map<String, dynamic>.from(body['pagination'] as Map) : const {};
+      if (mounted) {
+        setState(() {
+          _loans = merged;
+          _loanPage = page;
+          _loanHasMore = pg.isNotEmpty ? page < toNum(pg['totalPages'], 1).toInt() : list.length >= _loanPageSize;
+        });
+      }
     } catch (_) {} finally {
-      if (mounted) setState(() => _loadingLoans = false);
+      if (mounted) setState(() { if (append) { _loanLoadingMore = false; } else { _loadingLoans = false; } });
     }
   }
 
@@ -204,12 +286,18 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
     final loanTypeItems = _loanTypeLabels.entries
         .where((e) => !_loanTypeFeatureMap.containsKey(e.key) || features[_loanTypeFeatureMap[e.key]] == true)
         .toList();
+    // Show the Loan/Chit toggle only when the org uses both; single-feature orgs stay on the
+    // one source they have (chosen in initState).
+    final showToggle = features['enableLoans'] == true && features['enableChitfund'] == true;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Record Collection')),
       body: ListView(
         padding: const EdgeInsets.all(14),
         children: [
+          if (showToggle) _sourceToggle(),
+          if (_source == 'CHITFUND') ..._chitBody(),
+          if (_source == 'LOAN') ...[
           SectionCard(
             title: 'Filter',
             child: Column(
@@ -273,10 +361,18 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
                     ConstrainedBox(
                       constraints: const BoxConstraints(maxHeight: 340),
                       child: ListView.separated(
+                        controller: _loanScrollCtrl,
                         shrinkWrap: true,
-                        itemCount: _loans.length,
+                        // One extra row for the "Loading more…" footer while the next page loads.
+                        itemCount: _loans.length + (_loanHasMore ? 1 : 0),
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (ctx, i) {
+                          if (i >= _loans.length) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 10),
+                              child: Center(child: Text('Loading more…', style: TextStyle(fontSize: 12, color: AppColors.textSecondary))),
+                            );
+                          }
                           final l = _loans[i];
                           final c = Map<String, dynamic>.from(l['customer'] ?? {});
                           final assignee = Map<String, dynamic>.from(l['assignedTo'] ?? {});
@@ -379,10 +475,124 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
                 ),
               ],
             ),
+          ],
           const SizedBox(height: 20),
         ],
       ),
     );
+  }
+
+  // Loan / Chit source toggle (shown only when the org uses both). Switching resets any
+  // in-progress loan selection and lazily loads the other source's list.
+  Widget _sourceToggle() {
+    Widget chip(String value, String label) {
+      final sel = _source == value;
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: ChoiceChip(
+          label: Text(label, style: TextStyle(color: sel ? AppColors.primary : AppColors.textPrimary, fontWeight: sel ? FontWeight.w600 : FontWeight.w500)),
+          selected: sel,
+          onSelected: (_) {
+            if (_source == value) return;
+            setState(() { _source = value; _selectedLoan = null; });
+            if (value == 'CHITFUND') { _loadChits(); } else { _loadLoans(); }
+          },
+          backgroundColor: Colors.white,
+          selectedColor: AppColors.primary.withValues(alpha: 0.15),
+          side: BorderSide(color: sel ? AppColors.primary : AppColors.border),
+        ),
+      );
+    }
+
+    return SectionCard(
+      title: 'Source',
+      child: Row(children: [chip('LOAN', 'Loan'), chip('CHITFUND', 'Chit')]),
+    );
+  }
+
+  // Chit collection: pick one of the officer's active chits, then the shared chit-collection
+  // sheet handles month/member/amount. Mirrors the loan picker's look.
+  List<Widget> _chitBody() {
+    final q = _chitSearchCtrl.text.trim().toLowerCase();
+    final filtered = q.isEmpty
+        ? _chits
+        : _chits.where((c) =>
+            (c['chitNumber']?.toString().toLowerCase() ?? '').contains(q) ||
+            (c['name']?.toString().toLowerCase() ?? '').contains(q)).toList();
+    return [
+      SectionCard(
+        title: 'Select Chit',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _chitSearchCtrl,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: 'Search by chit # or name...',
+                suffixIcon: _chitSearchCtrl.text.isEmpty
+                    ? null
+                    : IconButton(icon: const Icon(Icons.clear), onPressed: () => setState(() => _chitSearchCtrl.clear())),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 8),
+            if (_loadingChits)
+              const Padding(padding: EdgeInsets.all(16), child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
+            else if (filtered.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(child: Text('No active chits assigned to you', style: TextStyle(color: AppColors.textSecondary))),
+              )
+            else
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 420),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (ctx, i) {
+                    final c = filtered[i];
+                    final assignee = Map<String, dynamic>.from(c['assignedTo'] ?? {});
+                    final memberCount = c['totalMembers'] ?? (c['_count'] is Map ? c['_count']['members'] : null);
+                    final subtitle = [
+                      if (memberCount != null) '$memberCount members',
+                      if (c['currentMonth'] != null) 'Month ${c['currentMonth']}',
+                      if (assignee['name'] != null) 'Agent: ${assignee['name']}',
+                    ].join(' · ');
+                    return InkWell(
+                      onTap: () => _selectChit(c),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.savings_outlined, color: AppColors.accent),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('${c['chitNumber'] ?? ''}${c['name'] != null ? ' · ${c['name']}' : ''}'.trim(),
+                                      style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                                  if (subtitle.isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(subtitle, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            const Icon(Icons.chevron_right, color: AppColors.textMuted),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    ];
   }
 
   Widget _selectedLoanCard() {

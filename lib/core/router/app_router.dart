@@ -128,7 +128,11 @@ final routerProvider = Provider<GoRouter>((ref) {
 
           GoRoute(path: '/chitfunds', builder: (_, __) => const ChitfundListPage()),
           GoRoute(path: '/chitfunds/new', builder: (_, __) => const ChitfundFormPage()),
-          GoRoute(path: '/chitfunds/:id', builder: (_, s) => ChitfundDetailPage(id: s.pathParameters['id']!)),
+          GoRoute(path: '/chitfunds/:id', builder: (_, s) => ChitfundDetailPage(
+                id: s.pathParameters['id']!,
+                initialTab: s.uri.queryParameters['tab'],
+                initialMemberId: s.uri.queryParameters['member'],
+              )),
           GoRoute(path: '/chitfunds/:id/auctions/:auctionId', builder: (_, s) => ChitfundAuctionDetailPage(chitfundId: s.pathParameters['id']!, auctionId: s.pathParameters['auctionId']!)),
 
           GoRoute(path: '/expenses', builder: (_, __) => const ExpenseListPage()),

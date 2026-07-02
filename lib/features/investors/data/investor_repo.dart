@@ -17,6 +17,11 @@ class InvestorRepo {
     return Map<String, dynamic>.from(d as Map);
   }
 
+  Future<Map<String, dynamic>> summary() async {
+    final d = await api.get('/investors/summary');
+    return Map<String, dynamic>.from(d as Map);
+  }
+
   Future<List<dynamic>> investments(String id) async {
     final d = await api.get('/investors/$id/investments');
     if (d is List) return d;

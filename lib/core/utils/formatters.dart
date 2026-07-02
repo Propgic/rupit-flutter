@@ -4,7 +4,11 @@ final _inr = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits
 final _inrDec = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 2);
 final _dateFmt = DateFormat('dd MMM yyyy');
 final _dateTimeFmt = DateFormat('dd MMM yyyy, hh:mm a');
+final _timeFmt = DateFormat('hh:mm a');
 final _inputDate = DateFormat('yyyy-MM-dd');
+// Indian-grouped patterns for compact currency: 0/2-decimal variants.
+final _inGroupInt = NumberFormat('#,##,##0', 'en_IN');
+final _inGroupDec = NumberFormat('#,##,##0.##', 'en_IN');
 
 String formatCurrency(dynamic v, {bool decimals = false}) {
   if (v == null) return '-';
@@ -39,6 +43,40 @@ String formatDateTime(dynamic v) {
 }
 
 String formatInputDate(DateTime d) => _inputDate.format(d);
+
+/// Time-only (12-hour) for a full datetime, e.g. "05:30 PM". Used where the date
+/// is already shown alongside and only the clock time needs to appear. Mirrors
+/// formatTime() in the web app's formatters.js.
+String formatTime(dynamic v) {
+  if (v == null) return '-';
+  try {
+    final d = v is DateTime ? v : DateTime.parse(v.toString()).toLocal();
+    return _timeFmt.format(d);
+  } catch (_) {
+    return '-';
+  }
+}
+
+/// Compact Indian-notation currency for tight spaces (e.g. dense metric cards):
+/// ₹1.08 Cr, ₹33.8 L. Under a lakh it stays a plain grouped number since those
+/// already fit. Mirrors formatCurrencyCompact() in the web app's formatters.js.
+String formatCurrencyCompact(dynamic v) {
+  final n = v is num ? v : num.tryParse(v?.toString() ?? '');
+  if (n == null) return '₹0';
+  final sign = n < 0 ? '-' : '';
+  final abs = n.abs();
+  // Round to 2 decimals then let the pattern drop trailing zeros (1.10 → 1.1, 2.00 → 2).
+  String trim(num val) => _inGroupDec.format(double.parse(val.toStringAsFixed(2)));
+  String body;
+  if (abs >= 1e7) {
+    body = '${trim(abs / 1e7)} Cr';
+  } else if (abs >= 1e5) {
+    body = '${trim(abs / 1e5)} L';
+  } else {
+    body = _inGroupInt.format(abs.round());
+  }
+  return '$sign₹$body';
+}
 
 /// Formats a chit auction time stored as a "HH:mm" 24-hour string into a
 /// 12-hour "h:mm AM/PM" label. Returns '-' when unset (legacy/mobile chits may

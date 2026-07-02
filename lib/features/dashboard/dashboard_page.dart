@@ -85,8 +85,8 @@ class DashboardPage extends ConsumerWidget {
           if (features['enableLoans'] == true) _fieldOfficerStats(context, d),
           _pendingVerificationList(d),
           _overdueLoansList(context, d),
-          _dailyCollectionChart(d),
           if (chitEnabled) _chitfundSection(context, d, auth, features),
+          _dailyCollectionChart(d),
         ] else ...[
           // Top gradient stat cards (Today's Loans / Total Overdue / Closing Balance) are
           // a loan/cash snapshot — hidden when the loan module is off (mirrors web). The
@@ -147,13 +147,13 @@ class DashboardPage extends ConsumerWidget {
           children: [
             Container(
               padding: const EdgeInsets.all(7),
-              decoration: BoxDecoration(color: AppColors.info.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.savings_outlined, size: 18, color: AppColors.info),
+              decoration: BoxDecoration(color: const Color(0xFF14B8A6).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)),
+              child: const Icon(Icons.monetization_on_outlined, size: 18, color: Color(0xFF0D9488)),
             ),
             const SizedBox(width: 10),
             const Text('Chit Funds', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
             const Spacer(),
-            TextButton(onPressed: () => context.push('/chitfunds'), child: const Text('View all')),
+            TextButton(onPressed: () => context.push('/chitfunds'), child: const Text('View All')),
           ],
         ),
         const SizedBox(height: 8),
@@ -166,7 +166,7 @@ class DashboardPage extends ConsumerWidget {
           childAspectRatio: 1.3,
           children: [
             _gradientStatTile('Active Chits', '${c['activeCount'] ?? 0}',
-                subtitle: '${formatCurrency(c['totalValue'])} total', icon: Icons.monetization_on,
+                subtitle: '${formatCurrency(c['totalValue'])} total value', icon: Icons.monetization_on,
                 gradient: const LinearGradient(colors: [Color(0xFF14B8A6), Color(0xFF059669)]),
                 onTap: () => context.push('/chitfunds')),
             _gradientStatTile('Active Members', '${c['activeMembers'] ?? 0}',
@@ -174,9 +174,16 @@ class DashboardPage extends ConsumerWidget {
                 gradient: const LinearGradient(colors: [Color(0xFF3B82F6), Color(0xFF4F46E5)])),
             _gradientStatTile('Auctions To Conduct', '${c['auctionsDueCount'] ?? 0}',
                 subtitle: '${c['auctionsTodayCount'] ?? 0} due today', icon: Icons.gavel,
-                gradient: const LinearGradient(colors: [Color(0xFF8B5CF6), Color(0xFF7C3AED)])),
+                gradient: const LinearGradient(colors: [Color(0xFF8B5CF6), Color(0xFF7C3AED)]),
+                onTap: () => showModalBottomSheet(
+                      context: context,
+                      isScrollControlled: true,
+                      backgroundColor: Colors.transparent,
+                      builder: (_) => AuctionsSheet(auctions: auctions),
+                    )),
             _gradientStatTile('To Be Collected', formatCurrency(c['totalToCollect']),
-                subtitle: 'tap for breakdown', icon: Icons.account_balance_wallet,
+                subtitle: 'Old ${formatCurrency(c['oldDues'])} · This month ${formatCurrency(c['currentMonthDue'])}',
+                icon: Icons.account_balance_wallet,
                 gradient: const LinearGradient(colors: [Color(0xFFF43F5E), Color(0xFFDC2626)]),
                 onTap: () => showModalBottomSheet(
                       context: context,
@@ -405,7 +412,7 @@ class DashboardPage extends ConsumerWidget {
                     Text(label, style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.85))),
                     const SizedBox(height: 2),
                     Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)),
-                    if (subtitle != null) Text(subtitle, style: TextStyle(fontSize: 10, color: Colors.white.withValues(alpha: 0.7))),
+                    if (subtitle != null) Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, color: Colors.white.withValues(alpha: 0.7))),
                   ],
                 ),
               ],
@@ -1055,6 +1062,14 @@ class _ChitDuesSheetState extends ConsumerState<ChitDuesSheet> {
     router.push('/chitfunds/$id');
   }
 
+  // Deep-link straight to a member's payment history: open the chit's Members tab and pop
+  // that member's transactions popup (consumed by ChitfundDetailPage via query params).
+  void _goMember(String chitfundId, String memberId) {
+    final router = GoRouter.of(context);
+    Navigator.of(context).pop();
+    router.push('/chitfunds/$chitfundId?tab=members&member=$memberId');
+  }
+
   @override
   Widget build(BuildContext context) {
     final chits = ((_data?['chits'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -1160,7 +1175,7 @@ class _ChitDuesSheetState extends ConsumerState<ChitDuesSheet> {
             final avatarLabel = ticket != null ? '$ticket' : (name.isEmpty ? '?' : name[0].toUpperCase());
             return ListTile(
               dense: true,
-              onTap: () => _goChit(id),
+              onTap: () => _goMember(id, m['memberId'].toString()),
               leading: CircleAvatar(
                 radius: 15,
                 backgroundColor: AppColors.danger.withValues(alpha: 0.1),
@@ -1171,6 +1186,106 @@ class _ChitDuesSheetState extends ConsumerState<ChitDuesSheet> {
               trailing: Text(formatCurrency(m['totalDue']), style: const TextStyle(fontWeight: FontWeight.w700)),
             );
           }),
+        ],
+      ),
+    );
+  }
+}
+
+// Drill-down behind the "Auctions To Conduct" chit stat tile: which chits have an
+// auction scheduled for today or overdue. Reuses the auctions already in the dashboard
+// payload (the same list as the Auctions To Conduct card) — no extra fetch needed.
+// Tapping a row jumps to that chit, where the auction is conducted. Shown to every
+// persona since the stat tile is role-agnostic; the backend scopes the payload per role.
+class AuctionsSheet extends StatelessWidget {
+  const AuctionsSheet({super.key, required this.auctions});
+  final List<Map<String, dynamic>> auctions;
+
+  void _goChit(BuildContext context, String id) {
+    final router = GoRouter.of(context);
+    Navigator.of(context).pop();
+    router.push('/chitfunds/$id');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final overdue = auctions.where((a) => a['overdue'] == true).length;
+    final today = auctions.length - overdue;
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.85,
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          Container(margin: const EdgeInsets.only(top: 10), width: 40, height: 4, decoration: BoxDecoration(color: AppColors.border, borderRadius: BorderRadius.circular(2))),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 6),
+            child: Row(
+              children: [
+                const Expanded(child: Text('Auctions To Conduct', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800))),
+                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
+              ],
+            ),
+          ),
+          Expanded(
+            child: auctions.isEmpty
+                ? const EmptyView(message: "No auctions due — you're all caught up.", icon: Icons.gavel_outlined)
+                : ListView(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(child: _totalTile('Due Today', '$today', AppColors.warning)),
+                          const SizedBox(width: 8),
+                          Expanded(child: _totalTile('Overdue', '$overdue', AppColors.danger)),
+                          const SizedBox(width: 8),
+                          Expanded(child: _totalTile('Total', '${auctions.length}', const Color(0xFF7C3AED))),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Card(
+                        margin: EdgeInsets.zero,
+                        child: Column(
+                          children: auctions.map((a) {
+                            final isOverdue = a['overdue'] == true;
+                            return ListTile(
+                              dense: true,
+                              onTap: () => _goChit(context, a['chitfundId'].toString()),
+                              leading: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: const Color(0xFF7C3AED).withValues(alpha: 0.1),
+                                child: const Icon(Icons.gavel, size: 16, color: Color(0xFF7C3AED)),
+                              ),
+                              title: Text('${a['chitName'] ?? ''}${a['chitNumber'] != null ? '  #${a['chitNumber']}' : ''}',
+                                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                              subtitle: Text('Month ${a['monthNumber']} · ${formatDate(a['auctionDate'])}', style: const TextStyle(fontSize: 11)),
+                              trailing: StatusChip(
+                                label: isOverdue ? 'Overdue' : 'Today',
+                                color: isOverdue ? AppColors.danger : AppColors.warning,
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _totalTile(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+      decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textSecondary), textAlign: TextAlign.center),
+          const SizedBox(height: 4),
+          Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: color), textAlign: TextAlign.center),
         ],
       ),
     );

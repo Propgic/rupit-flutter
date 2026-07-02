@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/api/api_client.dart';
+import '../../../core/auth/auth_controller.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
@@ -94,10 +95,20 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
     }
   }
 
+  // Field officers get a read-only self-scoped view (backend scopes the list to their
+  // own collections); verify/reject is ORG_ADMIN/MANAGER only, so the action buttons and
+  // the "Verify" framing are hidden for them.
+  bool get _isFieldOfficer => ref.read(authProvider).user?.role == 'FIELD_OFFICER';
+
   @override
   Widget build(BuildContext context) {
+    final title = _isFieldOfficer
+        ? 'My Pending Collections'
+        : (widget.collectorName?.isNotEmpty ?? false)
+            ? 'Verify — ${widget.collectorName}'
+            : 'Verify Collections';
     return Scaffold(
-      appBar: AppBar(title: Text((widget.collectorName?.isNotEmpty ?? false) ? 'Verify — ${widget.collectorName}' : 'Verify Collections')),
+      appBar: AppBar(title: Text(title)),
       body: _initialLoad
           ? const LoadingView()
           : Column(
@@ -284,28 +295,30 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
                       style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.danger)),
                 ),
             ]),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _verify(c['id'].toString(), false),
-                    icon: const Icon(Icons.close, color: AppColors.danger),
-                    label: const Text('Reject', style: TextStyle(color: AppColors.danger)),
-                    style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.danger)),
+            if (!_isFieldOfficer) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _verify(c['id'].toString(), false),
+                      icon: const Icon(Icons.close, color: AppColors.danger),
+                      label: const Text('Reject', style: TextStyle(color: AppColors.danger)),
+                      style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.danger)),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _verify(c['id'].toString(), true),
-                    icon: const Icon(Icons.check),
-                    label: const Text('Verify'),
-                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () => _verify(c['id'].toString(), true),
+                      icon: const Icon(Icons.check),
+                      label: const Text('Verify'),
+                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+                    ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

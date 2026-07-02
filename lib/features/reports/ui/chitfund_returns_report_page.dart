@@ -2,9 +2,11 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
+import '../../../core/auth/auth_controller.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
+import '../../chitfunds/ui/chitfund_profit_panel.dart';
 
 // Per-chit returns report (a P&L for one chit fund): the foreman commission income from
 // conducted auctions, netted against expenses booked under the chit, plus the operational
@@ -104,24 +106,43 @@ class _ChitfundReturnsReportPageState extends ConsumerState<ChitfundReturnsRepor
     final cashflow = Map<String, dynamic>.from(r['cashflow'] ?? {});
     final expCount = toNum(expenses['count']).toInt();
 
+    // DIP chits earn no commission — profit is the cash left after paying winners
+    // (collections − payouts − expenses), so the P&L reads from the cash flow.
+    final isDip = c['dividendType'] == 'DIP';
+    final collectedVal = toNum(cashflow['totalCollected']).toDouble();
+    final payoutVal = toNum(cashflow['totalPaidOut']).toDouble() + toNum(cashflow['pendingPayout']).toDouble();
+    final grossVal = collectedVal - payoutVal;
+
     return [
       const SizedBox(height: 4),
       _hero(c, income),
       const SizedBox(height: 12),
       // Headline P&L
-      _statCard(Icons.monetization_on_outlined, AppColors.accent, 'Income (Commission)',
-          formatCurrency(income['commissionRealized']),
-          '${formatCurrency(income['commissionPerMonth'])}/mo · projected ${formatCurrency(income['commissionProjected'])}'),
+      if (isDip)
+        _statCard(Icons.monetization_on_outlined, AppColors.accent, 'Retained from chit',
+            formatCurrency(grossVal),
+            '${formatCurrency(collectedVal)} collected − ${formatCurrency(payoutVal)} paid to winners')
+      else
+        _statCard(Icons.monetization_on_outlined, AppColors.accent, 'Income (Commission)',
+            formatCurrency(income['commissionRealized']),
+            '${formatCurrency(income['commissionPerMonth'])}/mo · projected ${formatCurrency(income['commissionProjected'])}'),
       _statCard(Icons.trending_down, AppColors.danger, 'Expenses Booked',
           formatCurrency(expenses['total']),
           '$expCount ${expCount == 1 ? 'entry' : 'entries'} under this chit'),
       _profitCard(profit),
       // Income → Expense → Profit visual
-      _flowCard(income, expenses, profit),
+      _flowCard(isDip, income, expenses, profit, cashflow),
+      // Profit withdrawals — taking the realised profit out of the chit
+      if (_selectedId != null)
+        ChitfundProfitPanel(
+          chitfundId: _selectedId!,
+          canWithdraw: ref.read(authProvider).hasRole('ORG_ADMIN'),
+          chitName: c['name']?.toString(),
+        ),
       // Expense breakdown
       _expenseBreakdownCard(expenses),
       // Cash-flow context
-      _cashflowCard(cashflow),
+      _cashflowCard(isDip, cashflow),
       // Expense line items
       _expenseItemsCard(expenses),
     ];
@@ -272,17 +293,24 @@ class _ChitfundReturnsReportPageState extends ConsumerState<ChitfundReturnsRepor
     );
   }
 
-  Widget _flowCard(Map<String, dynamic> income, Map<String, dynamic> expenses, Map<String, dynamic> profit) {
+  Widget _flowCard(bool isDip, Map<String, dynamic> income, Map<String, dynamic> expenses, Map<String, dynamic> profit, Map<String, dynamic> cashflow) {
     final incomeVal = toNum(income['commissionRealized']).toDouble();
     final expenseVal = toNum(expenses['total']).toDouble();
     final profitVal = toNum(profit['netRealized']).toDouble();
-    final base = [incomeVal, expenseVal + (profitVal > 0 ? profitVal : 0), 1.0].reduce((a, b) => a > b ? a : b);
+    final collectedVal = toNum(cashflow['totalCollected']).toDouble();
+    final payoutVal = toNum(cashflow['totalPaidOut']).toDouble() + toNum(cashflow['pendingPayout']).toDouble();
+    // Scale the bars to the largest inflow so nothing overflows.
+    final base = [isDip ? collectedVal : incomeVal, expenseVal + payoutVal + (profitVal > 0 ? profitVal : 0), 1.0].reduce((a, b) => a > b ? a : b);
     double frac(double v) => (v / base).clamp(0.0, 1.0);
     return SectionCard(
       title: 'How the profit is made (realised so far)',
       child: Column(
         children: [
-          _flowBar('Commission income', incomeVal, frac(incomeVal), AppColors.accent),
+          if (isDip) ...[
+            _flowBar('Collected from members', collectedVal, frac(collectedVal), AppColors.accent),
+            _flowBar('Less: paid to winners', -payoutVal, frac(payoutVal), const Color(0xFFF59E0B)),
+          ] else
+            _flowBar('Commission income', incomeVal, frac(incomeVal), AppColors.accent),
           _flowBar('Less: expenses', -expenseVal, frac(expenseVal), const Color(0xFFFB7185)),
           const Divider(height: 18),
           _flowBar('Net profit', profitVal, frac(profitVal > 0 ? profitVal : 0),
@@ -380,15 +408,20 @@ class _ChitfundReturnsReportPageState extends ConsumerState<ChitfundReturnsRepor
     );
   }
 
-  Widget _cashflowCard(Map<String, dynamic> cashflow) {
+  Widget _cashflowCard(bool isDip, Map<String, dynamic> cashflow) {
     return SectionCard(
       title: 'Cash Flow Context',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8),
-            child: Text('Member money flowing through the chit — pass-through, not profit.', style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              isDip
+                  ? 'Member money through the chit — the gap between money in and money out is the profit above.'
+                  : 'Member money flowing through the chit — pass-through, not profit.',
+              style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+            ),
           ),
           _cashflowRow(Icons.south_west, AppColors.accent, 'Collected from members', formatCurrency(cashflow['totalCollected'])),
           _cashflowRow(Icons.north_east, AppColors.danger, 'Paid out to winners', formatCurrency(cashflow['totalPaidOut'])),

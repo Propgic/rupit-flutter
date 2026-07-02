@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/auth/auth_controller.dart';
+import '../../../core/auth/auth_models.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
@@ -10,6 +12,7 @@ import '../data/chitfund_repo.dart';
 import '../../customers/data/customer_repo.dart';
 import 'field_officer_picker.dart';
 import 'chitfund_timeline.dart';
+import 'chitfund_profit_panel.dart';
 
 final chitfundDetailProvider = FutureProvider.autoDispose.family<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(chitfundRepoProvider).get(id);
@@ -50,9 +53,57 @@ bool _canDeletePayment(Map<String, dynamic> row, String? role) {
   return false;
 }
 
+// The chit installment that belongs to the current calendar month. A monthly chit has one
+// installment per calendar month, so the "current month" is just how many calendar months
+// have elapsed since the start month (1-based) — regardless of the day-of-month or of whether
+// that month's auction has already been held. This is what collectors mean by "this month",
+// and it can lag chitfund.currentMonth, which advances the instant an auction is conducted
+// (e.g. right after this month's auction, currentMonth points at NEXT month, not the one due).
+int? currentChitMonth(dynamic startDate) {
+  if (startDate == null) return null;
+  final start = tryParseDate(startDate.toString());
+  if (start == null) return null;
+  final now = DateTime.now();
+  return (now.year - start.year) * 12 + (now.month - start.month) + 1;
+}
+
+// Opens the chit-installment "Record Payment" sheet for [chitfund] (a full chitfund detail
+// map, i.e. GET /chitfunds/:id). Shared by this page's Record-Payment action and the
+// field-agent Record Collection form, so both drive the same month/member/dues flow and the
+// same POST /chitfunds/:id/payments → Collection pipeline. [onRecorded] fires after each save.
+Future<void> openChitCollectionSheet(
+  BuildContext context,
+  WidgetRef ref, {
+  required Map<String, dynamic> chitfund,
+  VoidCallback? onRecorded,
+}) async {
+  final chitfundId = chitfund['id'].toString();
+  final members = await ref.read(chitfundRepoProvider).members(chitfundId);
+  if (!context.mounted) return;
+  final duration = toNum(chitfund['durationMonths']).toInt();
+  final maxMonth = duration < 1 ? 1 : duration;
+  final current = toNum(chitfund['currentMonth']).toInt();
+  final initialMonth = current < 1 ? 1 : (current > maxMonth ? maxMonth : current);
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (_) => _PaymentSheet(
+      chitfundId: chitfundId,
+      chitfund: chitfund,
+      members: members,
+      initialMonth: initialMonth,
+      onRecorded: onRecorded ?? () {},
+    ),
+  );
+}
+
 class ChitfundDetailPage extends ConsumerStatefulWidget {
   final String id;
-  const ChitfundDetailPage({super.key, required this.id});
+  // Dashboard "To Be Collected" deep-link (?tab=members&member=<id>): land on the given
+  // tab and pop that member's transactions popup once the member list has loaded.
+  final String? initialTab;
+  final String? initialMemberId;
+  const ChitfundDetailPage({super.key, required this.id, this.initialTab, this.initialMemberId});
   @override
   ConsumerState<ChitfundDetailPage> createState() => _ChitfundDetailPageState();
 }
@@ -61,8 +112,11 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
   // Visible tabs in display order, with per-role hidden ones (Settings → Chitfund
   // Settings) filtered out. `info` is always shown; the rest gate on chitfund.tab.<key>.
   // Landing on the first visible tab gives web's "fall back to first visible tab".
-  late final List<String> _tabKeys;
-  late final TabController _tabs;
+  // Not `final`: the set is re-derived from the auth session (see _syncTabsWithAuth),
+  // because initState's snapshot can predate the session load — which would otherwise
+  // permanently drop the permission-gated Profits tab.
+  late List<String> _tabKeys;
+  late TabController _tabs;
   // Bumped on every refresh so the embedded ChitfundTimeline refetches.
   int _reloadKey = 0;
 
@@ -73,19 +127,58 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
   String _payMonth = '';
   String _payMode = '';
   bool _payMonthDefaulted = false;
+  // One-shot guard for the dashboard deep-link: open the target member's popup once.
+  bool _deepLinkOpened = false;
 
   @override
   void initState() {
     super.initState();
-    final auth = ref.read(authProvider);
-    const order = ['timeline', 'info', 'members', 'auctions', 'payments', 'payouts'];
-    _tabKeys = order.where((k) => !auth.isHidden('chitfund.tab.$k')).toList();
-    _tabs = TabController(length: _tabKeys.length, vsync: this);
+    // Initial tab set from the current auth snapshot. This can run before the auth
+    // session has finished loading (the router lets pages build while auth.loading),
+    // in which case the permission-gated Profits tab is absent here and is added by
+    // the ref.listen(authProvider) re-sync in build() once the session arrives.
+    _tabKeys = _computeTabKeys(ref.read(authProvider));
+    // Deep-link: land on the requested (visible) tab; otherwise the first tab.
+    final initialIndex = widget.initialTab != null ? _tabKeys.indexOf(widget.initialTab!) : -1;
+    _tabs = TabController(length: _tabKeys.length, vsync: this, initialIndex: initialIndex >= 0 ? initialIndex : 0);
     _paySearchC.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() { _tabs.dispose(); _paySearchC.dispose(); super.dispose(); }
+
+  // Visible tab keys for the current auth session, in display order. `info` is always
+  // shown; `returns` (Profits) follows the same gate as the Reports screen — the
+  // reports.chitfund permission (the withdraw/reverse actions inside it are further
+  // ORG_ADMIN-only, backend-enforced). Any tab the org hides for this role (Settings →
+  // Chitfund Settings) is dropped.
+  List<String> _computeTabKeys(AuthState auth) {
+    final canViewProfit = auth.hasPermission('reports.chitfund');
+    const order = ['timeline', 'info', 'members', 'auctions', 'payments', 'payouts', 'returns'];
+    return order.where((k) {
+      if (auth.isHidden('chitfund.tab.$k')) return false;
+      if (k == 'returns' && !canViewProfit) return false;
+      return true;
+    }).toList();
+  }
+
+  // Re-derive the visible tabs when the auth session changes — most importantly when
+  // it finishes loading and the permission-gated Profits tab becomes available. A
+  // TabController's length is fixed at construction, so a changed set means a fresh
+  // controller; the previous one is disposed after this frame so widgets still
+  // referencing it can detach first. The currently-selected tab is preserved.
+  void _syncTabsWithAuth(AuthState auth) {
+    final desired = _computeTabKeys(auth);
+    if (listEquals(desired, _tabKeys)) return;
+    final old = _tabs;
+    final currentKey = old.index < _tabKeys.length ? _tabKeys[old.index] : null;
+    final targetIndex = currentKey != null ? desired.indexOf(currentKey) : -1;
+    setState(() {
+      _tabKeys = desired;
+      _tabs = TabController(length: desired.length, vsync: this, initialIndex: targetIndex >= 0 ? targetIndex : 0);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+  }
 
   bool get _canManage {
     final auth = ref.read(authProvider);
@@ -99,6 +192,7 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
         'auctions': 'Auctions',
         'payments': 'Payments',
         'payouts': 'Payouts',
+        'returns': 'Profits',
       }[k] ?? k;
 
   Widget _tabContent(String k, Map<String, dynamic> c) {
@@ -115,6 +209,18 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
         return _paymentsTab(c);
       case 'payouts':
         return _payoutsTab(c);
+      case 'returns':
+        return ListView(
+          padding: const EdgeInsets.all(14),
+          children: [
+            ChitfundProfitPanel(
+              chitfundId: widget.id,
+              canWithdraw: ref.read(authProvider).hasRole('ORG_ADMIN'),
+              chitName: c['name']?.toString(),
+              reloadKey: _reloadKey,
+            ),
+          ],
+        );
     }
     return const SizedBox.shrink();
   }
@@ -180,9 +286,36 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
     } on ApiException catch (e) { showToast(e.message, error: true); }
   }
 
+  // Dashboard deep-link: once the member list is available, pop the target member's
+  // transactions popup exactly once (one-shot — a later reload won't reopen it).
+  void _maybeOpenDeepLinkMember() {
+    if (_deepLinkOpened || widget.initialMemberId == null) return;
+    final async = ref.watch(chitfundMembersProvider(widget.id));
+    async.whenData((items) {
+      if (_deepLinkOpened) return;
+      final target = items.cast<dynamic>().map((e) => Map<String, dynamic>.from(e as Map)).cast<Map<String, dynamic>?>().firstWhere(
+            (m) => m?['id']?.toString() == widget.initialMemberId,
+            orElse: () => null,
+          );
+      // members loaded — consume the intent whether or not the member was found, so we
+      // don't keep retrying on every rebuild.
+      _deepLinkOpened = true;
+      if (target != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) showMemberTransactions(context, ref, chitfundId: widget.id, member: target);
+        });
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Keep the tab set in sync with the auth session. initState's snapshot may predate
+    // the session load, which would otherwise permanently drop the Profits tab; this
+    // re-derives (and re-labels) the tabs once permissions/visibility arrive.
+    ref.listen(authProvider, (_, next) => _syncTabsWithAuth(next));
     final data = ref.watch(chitfundDetailProvider(widget.id));
+    _maybeOpenDeepLinkMember();
     return Scaffold(
       appBar: AppBar(
         title: const Text('Chitfund'),
@@ -337,19 +470,45 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
       error: (e, _) => ErrorView(message: e.toString()),
       data: (items) {
         if (items.isEmpty) return const EmptyView(message: 'No members yet');
+        // A customer may hold more than one ticket in this chit. Build memberId -> "Chit x of y"
+        // so duplicate-customer rows announce how many chits that person holds here.
+        final byCustomer = <String, List<Map<String, dynamic>>>{};
+        for (final it in items) {
+          final mm = Map<String, dynamic>.from(it as Map);
+          (byCustomer[mm['customerId']?.toString() ?? ''] ??= []).add(mm);
+        }
+        final holding = <String, String>{};
+        for (final list in byCustomer.values) {
+          if (list.length < 2) continue;
+          list.sort((a, b) => toNum(a['ticketNumber']).compareTo(toNum(b['ticketNumber'])));
+          for (var k = 0; k < list.length; k++) {
+            holding[list[k]['id'].toString()] = 'Chit ${k + 1} of ${list.length}';
+          }
+        }
         return ListView.builder(
           itemCount: items.length,
           itemBuilder: (ctx, i) {
             final mem = Map<String, dynamic>.from(items[i] as Map);
             final cust = Map<String, dynamic>.from(mem['customer'] ?? {});
             final hasWon = mem['hasWonAuction'] == true;
+            final holdingTag = holding[mem['id'].toString()];
             return Card(
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               // Tint the auction winner's row so it stands out (mirrors web).
               color: hasWon ? AppColors.orange.withValues(alpha: 0.10) : null,
               child: ListTile(
+                // Tap a member to see their full transaction history + pending dues.
+                onTap: () => showMemberTransactions(context, ref, chitfundId: widget.id, member: mem),
                 leading: Avatar(url: cust['photo']?.toString(), name: '${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'),
-                title: Text('#${mem['ticketNumber'] ?? '-'} ${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim()),
+                title: Row(
+                  children: [
+                    Expanded(child: Text('#${mem['ticketNumber'] ?? '-'} ${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim())),
+                    if (holdingTag != null) ...[
+                      const SizedBox(width: 6),
+                      StatusChip(label: holdingTag, color: AppColors.purple),
+                    ],
+                  ],
+                ),
                 subtitle: Text(
                   '${cust['phone'] ?? ''}'
                   '${hasWon ? ' · Won month ${mem['wonMonth'] ?? '-'}' : ''}',
@@ -623,26 +782,34 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
       data: (raw) {
         final all = raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
 
-        // Default the month filter to the chit's current month on first load (once),
-        // so the tab opens on the active month rather than the whole history.
+        // Default the month filter to the active collection month on first load (once),
+        // so the tab opens on the month being collected rather than the whole history.
+        // `currentMonth` points at the month whose auction has NOT been conducted yet
+        // (usually no collections), so the latest *auctioned* month — currentMonth - 1 —
+        // is the one actually being collected.
         if (!_payMonthDefaulted) {
           final cur = toNum(c['currentMonth']).toInt();
           _payMonthDefaulted = true;
           if (cur > 0) {
+            final activeMonth = cur - 1 < 1 ? 1 : cur - 1;
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) setState(() => _payMonth = '$cur');
+              if (mounted) setState(() => _payMonth = '$activeMonth');
             });
           }
         }
 
         // Distinct months / modes present, for the filter dropdowns. Always offer the
-        // current month even with no payments yet.
+        // active collection month (and the in-progress month) even with no payments yet,
+        // so the default selection below always resolves to a real option.
         final months = <int>{};
         for (final r in all) {
           if (r['monthNumber'] != null) months.add(toNum(r['monthNumber']).toInt());
         }
         final cur = toNum(c['currentMonth']).toInt();
-        if (cur > 0) months.add(cur);
+        if (cur > 0) {
+          months.add(cur);                  // in-progress month (advance payers)
+          if (cur > 1) months.add(cur - 1); // active collection month we default to
+        }
         final monthList = months.toList()..sort((a, b) => b.compareTo(a));
         final modes = <String>{};
         for (final r in all) {
@@ -691,6 +858,8 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
                             final isCollection = type == 'COLLECTION';
                             final status = (pm['verificationStatus'] ?? pm['status'] ?? 'PENDING').toString();
                             final showDelete = isCollection && notCompleted && _canManage && _canDeletePayment(pm, role);
+                            // Field officer who recorded the collection (null for payouts).
+                            final officer = pm['collectedByName']?.toString();
                             return Card(
                               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                               child: ListTile(
@@ -700,9 +869,19 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
                                     StatusChip(label: type, color: type == 'PAYOUT' ? AppColors.info : AppColors.primary),
                                   ],
                                 ),
-                                subtitle: Text(
-                                  '$status · ${pm['paymentMode'] ?? '-'} · ${formatDate(pm['paidDate'] ?? pm['paymentDate'])}'
-                                  '${pm['reference'] != null ? ' · ${pm['reference']}' : ''}',
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '$status · ${pm['paymentMode'] ?? '-'} · ${formatDateTime(pm['paidDate'] ?? pm['paymentDate'])}'
+                                      '${pm['reference'] != null ? ' · ${pm['reference']}' : ''}',
+                                    ),
+                                    if (officer != null && officer.isNotEmpty)
+                                      Text(
+                                        'Field officer: $officer',
+                                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                                      ),
+                                  ],
                                 ),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
@@ -1023,25 +1202,8 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
     } on ApiException catch (e) { showToast(e.message, error: true); }
   }
 
-  Future<void> _openPayment(Map<String, dynamic> c) async {
-    final members = await ref.read(chitfundRepoProvider).members(widget.id);
-    if (!mounted) return;
-    final duration = toNum(c['durationMonths']).toInt();
-    final maxMonth = duration < 1 ? 1 : duration;
-    final current = toNum(c['currentMonth']).toInt();
-    final initialMonth = current < 1 ? 1 : (current > maxMonth ? maxMonth : current);
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _PaymentSheet(
-        chitfundId: widget.id,
-        chitfund: c,
-        members: members,
-        initialMonth: initialMonth,
-        onRecorded: _refreshAll,
-      ),
-    );
-  }
+  Future<void> _openPayment(Map<String, dynamic> c) =>
+      openChitCollectionSheet(context, ref, chitfund: c, onRecorded: _refreshAll);
 
   Future<void> _openFinalDues(Map<String, dynamic> c) async {
     Map<String, dynamic>? dues;
@@ -1202,6 +1364,10 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
   // month picker offers these instead of every elapsed month. Empty = fall back to the
   // generated month list (e.g. the summary endpoint failed).
   List<Map<String, dynamic>> _collectable = const [];
+  // The chit's in-progress calendar month — the collector's default landing month. Derived
+  // from the start date, so it can lag chitfund.currentMonth (which jumps to the next month
+  // the instant an auction is conducted).
+  late final int? _chitCurrentMonth = currentChitMonth(widget.chitfund['startDate']);
   String? _selectedMemberId;
   final _amountC = TextEditingController();
   final _refC = TextEditingController();
@@ -1231,15 +1397,23 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
     try {
       final list = await ref.read(chitfundRepoProvider).collectionSummary(widget.chitfundId);
       if (!mounted) return;
+      final cm = _chitCurrentMonth;
+      // Show every month that still has dues, plus the current calendar month itself even
+      // when it's already fully collected — the current cycle is the collector's default
+      // landing spot, so it must stay selectable. Fully-collected PAST months stay hidden.
       final months = list
           .map((e) => Map<String, dynamic>.from(e as Map))
-          .where((m) => m['fullyCollected'] != true)
+          .where((m) => m['fullyCollected'] != true || toNum(m['monthNumber']).toInt() == cm)
           .toList();
       setState(() {
         _collectable = months;
-        // If the month we opened on isn't collectable, jump to the latest collectable one.
+        // Keep the month we opened on if it's still collectable. Otherwise default to the
+        // chit's current (in-progress) month whenever it's selectable; only fall back to the
+        // latest collectable month if the current month is out of range (e.g. the chit has run
+        // past its duration and there's no current month to land on).
         if (months.isNotEmpty && !months.any((m) => toNum(m['monthNumber']).toInt() == _month)) {
-          _month = toNum(months.last['monthNumber']).toInt();
+          final hasCurrent = cm != null && months.any((m) => toNum(m['monthNumber']).toInt() == cm);
+          _month = hasCurrent ? cm : toNum(months.last['monthNumber']).toInt();
           _load(_month);
         }
       });
@@ -1298,13 +1472,9 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
       if (due == null) { _amountC.text = ''; return; }
       // Pre-fill the remaining balance, not the full expected amount — a member may have
       // already made a partial payment this month, in which case they only owe the rest.
-      final alreadyPaid = _monthPayments
-          .map((p) => p as Map)
-          .where((p) => p['chitfundMemberId']?.toString() == memberId
-              && (p['type']?.toString() ?? 'COLLECTION') != 'PAYOUT'
-              && p['verificationStatus']?.toString() != 'REJECTED')
-          .fold<double>(0, (sum, p) => sum + toNum(p['amount']).toDouble());
-      final remaining = toNum(due['expectedAmount']).toDouble() - alreadyPaid;
+      // Prefer the backend's waterfall remaining so the prefill reflects spillover from
+      // earlier overpayments; fall back to expected − literal month payments otherwise.
+      final remaining = _remainingForDue(Map<String, dynamic>.from(due));
       _amountC.text = (remaining < 0 ? 0 : remaining).toStringAsFixed(2);
     });
   }
@@ -1334,26 +1504,44 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
     }
   }
 
+  // Literal amount credited to THIS month for a member from the (non-rejected, non-payout)
+  // month payments — the fallback when the backend didn't send waterfall-allocated fields.
+  double _literalPaidFor(String? memberId) => _monthPayments
+      .map((p) => p as Map)
+      .where((p) => p['chitfundMemberId']?.toString() == memberId
+          && (p['type']?.toString() ?? 'COLLECTION') != 'PAYOUT'
+          && p['verificationStatus']?.toString() != 'REJECTED')
+      .fold<double>(0, (sum, p) => sum + toNum(p['amount']).toDouble());
+
+  // Amount already credited to this month for a member via the backend's waterfall
+  // allocation (verified + pending, incl. spillover from earlier overpayments). Falls back
+  // to the literal month payments only when the allocated fields aren't present.
+  double _paidForDue(Map<String, dynamic> due) {
+    if (due['paidVerified'] != null) {
+      return toNum(due['paidVerified']).toDouble() + toNum(due['paidPending']).toDouble();
+    }
+    return _literalPaidFor(due['memberId']?.toString());
+  }
+
+  // Remaining balance for the member+month. Prefer the backend's waterfall `remaining` so
+  // the prefill/labels reflect spillover; otherwise expected − literal month payments.
+  double _remainingForDue(Map<String, dynamic> due) {
+    if (due['remaining'] != null) return toNum(due['remaining']).toDouble();
+    return toNum(due['expectedAmount']).toDouble() - _literalPaidFor(due['memberId']?.toString());
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = widget.chitfund;
-    // Only COLLECTION payments count as "installment paid". The winner has a PAYOUT
-    // record for the month they won but still owes their own installment, so exclude
-    // PAYOUT records here — otherwise the winner is dropped from the picker.
-    final collectionPayments = _monthPayments
-        .where((p) => ((p as Map)['type']?.toString() ?? 'COLLECTION') != 'PAYOUT'
-            && p['verificationStatus']?.toString() != 'REJECTED')
-        .toList();
-    final paidByMember = <String, double>{};
-    for (final p in collectionPayments) {
-      final id = (p as Map)['chitfundMemberId']?.toString() ?? '';
-      paidByMember[id] = (paidByMember[id] ?? 0) + toNum(p['amount']).toDouble();
-    }
+    // "Paid this month" is COLLECTION money only (winner PAYOUT records are excluded) and,
+    // when the backend sends it, the waterfall allocation incl. spillover — see _paidForDue /
+    // _remainingForDue, which the picker label, prefill and selectable filter all route through.
     final allDues = (_dues?['dues'] as List?) ?? const [];
     // A member is only "done" once they've paid at least their expected amount for the
     // month. Members who paid a partial amount still owe a balance, so keep them in the
-    // picker so the remaining due can be collected.
-    double remainingFor(Map d) => toNum(d['expectedAmount']).toDouble() - (paidByMember[d['memberId']?.toString()] ?? 0);
+    // picker so the remaining due can be collected. Prefer the backend's waterfall
+    // paid/remaining (spillover-aware); fall back to expected − literal month payments.
+    double remainingFor(Map d) => _remainingForDue(Map<String, dynamic>.from(d));
     final selectable = allDues.where((d) => remainingFor(d as Map) > 0.01).toList();
     final fullyPaidCount = allDues.length - selectable.length;
     final selectedDue = allDues.cast<Map?>().firstWhere(
@@ -1422,7 +1610,8 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
                 isExpanded: true,
                 items: selectable.map((raw) {
                   final d = Map<String, dynamic>.from(raw as Map);
-                  final paid = paidByMember[d['memberId']?.toString()] ?? 0;
+                  // Waterfall-aware paid (verified + pending incl. spillover) for the label.
+                  final paid = _paidForDue(d);
                   final name = '#${d['ticketNumber']} ${d['customerName'] ?? 'Member'}${d['hasWonAuction'] == true ? ' (won)' : ''}';
                   final label = paid > 0
                       ? '$name — ${formatCurrency(remainingFor(d))} due (paid ${formatCurrency(paid)} of ${formatCurrency(d['expectedAmount'])})'
@@ -1562,6 +1751,258 @@ class _CustPickerState extends State<_CustPicker> {
                       );
                     },
                   ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Opens a member's full transaction history (collections + payout) plus their pending-dues
+// ledger — the same popup the dashboard "To Be Collected" drill-down deep-links into.
+Future<void> showMemberTransactions(
+  BuildContext context,
+  WidgetRef ref, {
+  required String chitfundId,
+  required Map<String, dynamic> member,
+}) {
+  return showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: AppColors.surface,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (_) => _MemberTransactionsSheet(chitfundId: chitfundId, member: member),
+  );
+}
+
+class _MemberTransactionsSheet extends ConsumerStatefulWidget {
+  final String chitfundId;
+  final Map<String, dynamic> member;
+  const _MemberTransactionsSheet({required this.chitfundId, required this.member});
+  @override
+  ConsumerState<_MemberTransactionsSheet> createState() => _MemberTransactionsSheetState();
+}
+
+class _MemberTransactionsSheetState extends ConsumerState<_MemberTransactionsSheet> {
+  bool _loading = true;
+  List<dynamic> _txns = const [];
+  Map<String, dynamic>? _dues; // per-month waterfall dues ledger (months[], totalPending)
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final repo = ref.read(chitfundRepoProvider);
+      final memberId = widget.member['id'].toString();
+      // Transactions + the member's dues ledger in parallel (same as the web modal).
+      final results = await Future.wait([
+        repo.payments(widget.chitfundId, memberId: memberId),
+        repo.memberDues(widget.chitfundId, memberId),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _txns = results[0] as List;
+        _dues = results[1] as Map<String, dynamic>;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() { _txns = const []; _dues = null; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final m = widget.member;
+    final cust = Map<String, dynamic>.from(m['customer'] ?? {});
+    final name = '${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim();
+    // Reverse-chronological ledger: newest month first, payout before collections same month.
+    final rows = _txns.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+      ..sort((a, b) {
+        final ma = toNum(a['monthNumber']).toInt();
+        final mb = toNum(b['monthNumber']).toInt();
+        if (ma != mb) return mb - ma;
+        int ord(Map t) => (t['type']?.toString() ?? 'COLLECTION') == 'PAYOUT' ? 1 : 0;
+        return ord(b) - ord(a);
+      });
+    final totalCollected = rows
+        .where((t) => (t['type']?.toString() ?? 'COLLECTION') != 'PAYOUT')
+        .fold<double>(0, (s, t) => s + toNum(t['amount']).toDouble());
+    final totalPayout = rows
+        .where((t) => t['type']?.toString() == 'PAYOUT')
+        .fold<double>(0, (s, t) => s + toNum(t['amount']).toDouble());
+    final totalPending = toNum(_dues?['totalPending']).toDouble();
+    final pendingMonths = ((_dues?['months'] as List?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .where((mm) => mm['status'] != 'PAID')
+        .toList();
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.85,
+        expand: false,
+        builder: (_, ctrl) => ListView(
+          controller: ctrl,
+          padding: const EdgeInsets.all(16),
+          children: [
+            Row(children: [
+              Expanded(
+                child: Text('#${m['ticketNumber'] ?? '-'} ${name.isEmpty ? 'Member' : name} — Transactions',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+              IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: _summaryCell('Customer ID', cust['customerId']?.toString() ?? '-')),
+              const SizedBox(width: 8),
+              Expanded(child: _summaryCell('Phone', cust['phone']?.toString() ?? '-')),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: _summaryCell('Total Collected', formatCurrency(totalCollected), color: AppColors.accent)),
+              const SizedBox(width: 8),
+              Expanded(child: _summaryCell('Payout Received', totalPayout > 0 ? formatCurrency(totalPayout) : '—', color: AppColors.purple)),
+            ]),
+            if (m['hasWonAuction'] == true) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: AppColors.purple.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+                child: Text(
+                  'Won the auction in month ${m['wonMonth'] ?? '-'}'
+                  '${m['wonAmount'] != null ? ' · payout ${formatCurrency(m['wonAmount'])}' : ''}',
+                  style: const TextStyle(fontSize: 13, color: AppColors.purple),
+                ),
+              ),
+            ],
+            if (!_loading && _dues != null) ...[
+              const SizedBox(height: 12),
+              _pendingPanel(totalPending, pendingMonths),
+            ],
+            const SizedBox(height: 12),
+            if (_loading)
+              const Padding(padding: EdgeInsets.symmetric(vertical: 30), child: LoadingView())
+            else if (rows.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 30),
+                child: Center(child: Text('No transactions recorded yet.', style: TextStyle(color: AppColors.textSecondary))),
+              )
+            else
+              Card(
+                margin: EdgeInsets.zero,
+                child: Column(children: [
+                  for (var i = 0; i < rows.length; i++) ...[
+                    if (i > 0) const Divider(height: 1),
+                    _txnRow(rows[i]),
+                  ],
+                ]),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _summaryCell(String label, String value, {Color? color}) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: color ?? AppColors.textPrimary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pendingPanel(double totalPending, List<Map<String, dynamic>> pendingMonths) {
+    final owing = totalPending > 0.009;
+    return Container(
+      decoration: BoxDecoration(border: Border.all(color: AppColors.border), borderRadius: BorderRadius.circular(10)),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: const BoxDecoration(
+              color: AppColors.bg,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+            ),
+            child: Row(children: [
+              const Expanded(child: Text('Pending payments', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
+              Text(
+                owing ? '${formatCurrency(totalPending)} outstanding' : 'All dues cleared',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: owing ? AppColors.warning : AppColors.accent),
+              ),
+            ]),
+          ),
+          for (final mm in pendingMonths)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(children: [
+                Expanded(child: Text('Month ${mm['monthNumber']}', style: const TextStyle(fontSize: 13, color: AppColors.textSecondary))),
+                Text(
+                  '${formatCurrency(mm['pendingAmount'])}${mm['status'] == 'PARTIAL' ? ' left' : ''}',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.warning),
+                ),
+              ]),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _txnRow(Map<String, dynamic> t) {
+    final type = t['type']?.toString() ?? 'COLLECTION';
+    final isPayout = type == 'PAYOUT';
+    final status = t['status']?.toString() ?? 'PAID';
+    final officer = t['collectedByName']?.toString();
+    final meta = [
+      t['paymentMode']?.toString() ?? '-',
+      formatDate(t['paidDate'] ?? t['createdAt']),
+      if (officer != null && officer.isNotEmpty) officer,
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 30, child: Text('M${t['monthNumber']}', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary))),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                StatusChip(label: isPayout ? 'Payout' : 'Collection', color: isPayout ? AppColors.purple : AppColors.accent),
+                const SizedBox(height: 3),
+                Text(meta, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                isPayout ? '− ${formatCurrency(t['amount'])}' : formatCurrency(t['amount']),
+                style: TextStyle(fontWeight: FontWeight.w700, color: isPayout ? AppColors.purple : AppColors.textPrimary),
+              ),
+              const SizedBox(height: 3),
+              StatusChip(label: status, color: status == 'PAID' ? AppColors.accent : AppColors.warning),
+            ],
           ),
         ],
       ),

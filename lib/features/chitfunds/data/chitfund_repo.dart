@@ -112,6 +112,28 @@ class ChitfundRepo {
 
   Future<void> unsettlePayout(String id, String payoutId) async =>
       api.patch('/chitfunds/$id/payouts/$payoutId/unsettle');
+
+  // A single member's per-month dues ledger (waterfall allocation), used by the
+  // member transactions popup's "Pending payments" panel. GET /members/:mid/dues.
+  Future<Map<String, dynamic>> memberDues(String id, String memberId) async {
+    final d = await api.get('/chitfunds/$id/members/$memberId/dues');
+    return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
+  }
+
+  // Realised/withdrawn/available profit + the withdrawal ledger for a chit.
+  // GET /chitfunds/:id/profit-withdrawals.
+  Future<Map<String, dynamic>> profitWithdrawals(String id) async {
+    final d = await api.get('/chitfunds/$id/profit-withdrawals');
+    return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
+  }
+
+  // Draw realised business profit out of the chit (ORG_ADMIN only, backend-enforced).
+  Future<void> withdrawProfit(String id, Map<String, dynamic> body) async =>
+      api.post('/chitfunds/$id/withdraw-profit', data: body);
+
+  // Reverse a profit withdrawal — the amount returns to available profit.
+  Future<void> deleteProfitWithdrawal(String id, String withdrawalId) async =>
+      api.delete('/chitfunds/$id/profit-withdrawals/$withdrawalId');
 }
 
 final chitfundRepoProvider = Provider<ChitfundRepo>((ref) => ChitfundRepo(ref.read(apiClientProvider)));

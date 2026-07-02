@@ -91,6 +91,10 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
   String? _toDate;
   List<Map<String, dynamic>> _assignees = [];
   Object? _error;
+  // Portfolio metrics spanning every loan matching the current filters (not just
+  // the current page) — from the backend `totals` object. Null until first load.
+  Map<String, dynamic>? _totals;
+  int _totalCount = 0;
 
   @override
   void initState() {
@@ -181,13 +185,24 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
           );
       final data = (res['data'] as List?) ?? const [];
       final pg = Map<String, dynamic>.from(res['pagination'] ?? {});
+      final totals = res['totals'] is Map ? Map<String, dynamic>.from(res['totals'] as Map) : null;
       setState(() {
         _items.addAll(data.map((e) => Map<String, dynamic>.from(e as Map)));
         _page += 1;
         _hasMore = _page <= (pg['totalPages'] ?? 1);
+        // Totals span all matching loans, so refresh them on every load (they're
+        // identical across pages of the same filter set).
+        _totals = totals;
+        _totalCount = (pg['total'] as num?)?.toInt() ?? 0;
       });
     } catch (e) {
-      setState(() => _error = e);
+      setState(() {
+        _error = e;
+        if (_items.isEmpty) {
+          _totals = null;
+          _totalCount = 0;
+        }
+      });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -336,6 +351,69 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
     );
   }
 
+  /// Portfolio metrics row reflecting the current type/status/assignee/date
+  /// filters, spanning every matching loan (from the backend `totals`, not just
+  /// this page). Shows 0 / ₹0 when totals is null. Mirrors the web StatsCard row.
+  Widget _buildMetrics() {
+    final t = _totals;
+    final cards = <Widget>[
+      _LoanMetricCard(
+        label: 'Total Loans',
+        value: '$_totalCount',
+        color: AppColors.textSecondary,
+        icon: Icons.layers_outlined,
+      ),
+      _LoanMetricCard(
+        label: 'Disbursed',
+        value: formatCurrencyCompact(t?['principalAmount'] ?? 0),
+        color: AppColors.info,
+        icon: Icons.payments_outlined,
+      ),
+      _LoanMetricCard(
+        label: 'Collected',
+        value: formatCurrencyCompact(t?['totalPaid'] ?? 0),
+        color: AppColors.accent,
+        icon: Icons.savings_outlined,
+      ),
+      _LoanMetricCard(
+        label: 'Outstanding',
+        value: formatCurrencyCompact(t?['balance'] ?? 0),
+        color: AppColors.primary,
+        icon: Icons.account_balance_outlined,
+      ),
+      _LoanMetricCard(
+        label: 'Due Today',
+        value: formatCurrencyCompact(t?['dueTodayAmount'] ?? 0),
+        color: AppColors.warning,
+        icon: Icons.event_outlined,
+      ),
+      _LoanMetricCard(
+        label: 'Overdue',
+        value: formatCurrencyCompact(t?['overdueAmount'] ?? 0),
+        color: AppColors.danger,
+        icon: Icons.warning_amber_outlined,
+      ),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 3 columns on wider phones/tablets, 2 on narrow screens.
+          final columns = constraints.maxWidth >= 480 ? 3 : 2;
+          const spacing = 8.0;
+          final cardWidth = (constraints.maxWidth - spacing * (columns - 1)) / columns;
+          return Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
+            children: [
+              for (final c in cards) SizedBox(width: cardWidth, child: c),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
@@ -455,6 +533,7 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
                 },
               ),
             ),
+          _buildMetrics(),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             child: Row(
@@ -618,6 +697,64 @@ class _StatusPill extends StatelessWidget {
             color: selected ? AppColors.primary : AppColors.textSecondary,
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Compact portfolio metric card: a small label, an icon tinted with the metric's
+/// accent color, and a big value. The value is wrapped in a FittedBox with an
+/// ellipsis fallback so long amounts never overflow on narrow phones.
+class _LoanMetricCard extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+  final IconData icon;
+  const _LoanMetricCard({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              maxLines: 1,
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: color),
+            ),
+          ),
+        ],
       ),
     );
   }
