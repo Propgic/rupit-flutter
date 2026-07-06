@@ -82,7 +82,9 @@ Future<void> openChitCollectionSheet(
   if (!context.mounted) return;
   final duration = toNum(chitfund['durationMonths']).toInt();
   final maxMonth = duration < 1 ? 1 : duration;
-  final current = toNum(chitfund['currentMonth']).toInt();
+  // Land on the calendar-derived in-progress month, not the auction pointer (which
+  // already names next month once this month's auction is recorded).
+  final current = toNum(chitfund['calendarMonth'] ?? chitfund['currentMonth']).toInt();
   final initialMonth = current < 1 ? 1 : (current > maxMonth ? maxMonth : current);
   await showModalBottomSheet<void>(
     context: context,
@@ -441,7 +443,7 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
               KeyValueRow(label: 'Duration', value: '${c['durationMonths']} months'),
               KeyValueRow(label: 'Commission', value: '${c['commission'] ?? 0}%'),
               KeyValueRow(label: 'Start Date', value: formatDate(c['startDate'])),
-              KeyValueRow(label: 'Current Month', value: '${c['currentMonth'] ?? 0} / ${c['durationMonths']}'),
+              KeyValueRow(label: 'Current Month', value: '${c['calendarMonth'] ?? c['currentMonth'] ?? 0} / ${c['durationMonths']}'),
               if (showTotalCollected)
                 KeyValueRow(label: 'Total Collected', value: formatCurrency(c['totalCollected'] ?? 0)),
               KeyValueRow(
@@ -784,14 +786,15 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
 
         // Default the month filter to the active collection month on first load (once),
         // so the tab opens on the month being collected rather than the whole history.
-        // `currentMonth` points at the month whose auction has NOT been conducted yet
-        // (usually no collections), so the latest *auctioned* month — currentMonth - 1 —
-        // is the one actually being collected.
+        // That's the calendar-derived `calendarMonth` — NOT `currentMonth`, the auction
+        // pointer that already names next month once this month's auction is recorded.
+        // Fall back to the latest auctioned month (currentMonth - 1) on older payloads.
         if (!_payMonthDefaulted) {
+          final cal = toNum(c['calendarMonth']).toInt();
           final cur = toNum(c['currentMonth']).toInt();
           _payMonthDefaulted = true;
-          if (cur > 0) {
-            final activeMonth = cur - 1 < 1 ? 1 : cur - 1;
+          final activeMonth = cal > 0 ? cal : (cur > 0 ? (cur - 1 < 1 ? 1 : cur - 1) : 0);
+          if (activeMonth > 0) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) setState(() => _payMonth = '$activeMonth');
             });
@@ -805,10 +808,10 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
         for (final r in all) {
           if (r['monthNumber'] != null) months.add(toNum(r['monthNumber']).toInt());
         }
-        final cur = toNum(c['currentMonth']).toInt();
+        final cur = toNum(c['calendarMonth'] ?? c['currentMonth']).toInt();
         if (cur > 0) {
-          months.add(cur);                  // in-progress month (advance payers)
-          if (cur > 1) months.add(cur - 1); // active collection month we default to
+          months.add(cur);                  // in-progress (calendar) month we default to
+          if (cur > 1) months.add(cur - 1); // previous month
         }
         final monthList = months.toList()..sort((a, b) => b.compareTo(a));
         final modes = <String>{};
@@ -1375,10 +1378,15 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
   DateTime _paidDate = DateTime.now();
 
   int get _duration => toNum(widget.chitfund['durationMonths']).toInt();
-  // Only let the user record payments up to the current month — future months
-  // haven't happened yet, so showing all `_duration` months is misleading.
+  // Only let the user record payments up to the month currently in progress — future
+  // months haven't happened yet, so showing all `_duration` months is misleading. "In
+  // progress" is the calendar-derived calendarMonth, not the auction pointer (which
+  // already names next month once this month's auction is recorded); currentMonth - 1
+  // still counts in case an auction was recorded ahead of its calendar month.
   int get _visibleMonths {
-    final cm = toNum(widget.chitfund['currentMonth']).toInt();
+    final lastAuctioned = toNum(widget.chitfund['currentMonth']).toInt() - 1;
+    final cal = toNum(widget.chitfund['calendarMonth'] ?? widget.chitfund['currentMonth']).toInt();
+    final cm = cal > lastAuctioned ? cal : lastAuctioned;
     final v = cm <= 0 ? _duration : (cm < _duration ? cm : _duration);
     return v < 1 ? 1 : v;
   }
@@ -1575,7 +1583,7 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
                   ? _collectable.map((mm) {
                       final m = toNum(mm['monthNumber']).toInt();
                       final tags = <String>[];
-                      if (m == toNum(c['currentMonth']).toInt()) tags.add('current');
+                      if (m == toNum(c['calendarMonth'] ?? c['currentMonth']).toInt()) tags.add('current');
                       if (m == _duration) tags.add('final');
                       if (mm['auctioned'] == false) tags.add('auction pending');
                       return DropdownMenuItem(value: m, child: Text('Month $m${tags.isNotEmpty ? ' — ${tags.join(', ')}' : ''}'));
@@ -1583,7 +1591,7 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
                   : List.generate(_visibleMonths, (i) {
                       final m = i + 1;
                       final tags = <String>[];
-                      if (m == toNum(c['currentMonth']).toInt()) tags.add('current');
+                      if (m == toNum(c['calendarMonth'] ?? c['currentMonth']).toInt()) tags.add('current');
                       if (m == _duration) tags.add('final');
                       return DropdownMenuItem(value: m, child: Text('Month $m${tags.isNotEmpty ? ' — ${tags.join(', ')}' : ''}'));
                     }),

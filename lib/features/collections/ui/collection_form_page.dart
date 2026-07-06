@@ -557,7 +557,7 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
                     final memberCount = c['totalMembers'] ?? (c['_count'] is Map ? c['_count']['members'] : null);
                     final subtitle = [
                       if (memberCount != null) '$memberCount members',
-                      if (c['currentMonth'] != null) 'Month ${c['currentMonth']}',
+                      if ((c['calendarMonth'] ?? c['currentMonth']) != null) 'Month ${c['calendarMonth'] ?? c['currentMonth']}',
                       if (assignee['name'] != null) 'Agent: ${assignee['name']}',
                     ].join(' · ');
                     return InkWell(
