@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/widgets/common.dart';
 import '../data/team_repo.dart';
@@ -26,6 +28,8 @@ class _TeamFormPageState extends ConsumerState<TeamFormPage> {
   String _role = 'FIELD_OFFICER';
   String _salaryMode = 'FIXED';
   String _salaryType = 'MONTHLY';
+  File? _photo;
+  String? _existingPhotoUrl;
   bool _saving = false;
   bool _loading = false;
 
@@ -50,6 +54,7 @@ class _TeamFormPageState extends ConsumerState<TeamFormPage> {
       _bankName.text = u['bankName']?.toString() ?? '';
       _bankAcc.text = u['bankAccountNumber']?.toString() ?? '';
       _bankIfsc.text = u['bankIfsc']?.toString() ?? '';
+      _existingPhotoUrl = u['photo']?.toString();
     } catch (e) {
       showToast('Failed: $e', error: true);
     } finally {
@@ -59,6 +64,11 @@ class _TeamFormPageState extends ConsumerState<TeamFormPage> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    // Backend rejects create without a photo (upload.single('photo') is mandatory).
+    if (widget.id == null && _photo == null) {
+      showToast('Team member photo is required', error: true);
+      return;
+    }
     setState(() => _saving = true);
     try {
       final body = <String, dynamic>{
@@ -79,10 +89,10 @@ class _TeamFormPageState extends ConsumerState<TeamFormPage> {
       }
       final repo = ref.read(teamRepoProvider);
       if (widget.id == null) {
-        await repo.create(body);
+        await repo.create(body, photo: _photo);
         showToast('Team member added');
       } else {
-        await repo.update(widget.id!, body);
+        await repo.update(widget.id!, body, photo: _photo);
         showToast('Updated');
       }
       if (mounted) context.go('/team');
@@ -91,6 +101,83 @@ class _TeamFormPageState extends ConsumerState<TeamFormPage> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<void> _pickPhoto() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Camera'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+    final x = await ImagePicker().pickImage(source: source, maxWidth: 1600, imageQuality: 80);
+    if (x != null) setState(() => _photo = File(x.path));
+  }
+
+  Widget _photoPicker() {
+    final hasNew = _photo != null;
+    final resolved = resolveUrl(_existingPhotoUrl);
+    ImageProvider? preview;
+    if (hasNew) {
+      preview = FileImage(_photo!);
+    } else if (resolved != null) {
+      preview = NetworkImage(resolved);
+    }
+    return Row(
+      children: [
+        GestureDetector(
+          onTap: _pickPhoto,
+          child: Container(
+            width: 84,
+            height: 84,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade300),
+              image: preview == null ? null : DecorationImage(image: preview, fit: BoxFit.cover),
+            ),
+            child: preview == null
+                ? const Icon(Icons.add_a_photo_outlined, color: Colors.grey)
+                : null,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.id == null ? 'Photo *' : 'Photo', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  TextButton(onPressed: _pickPhoto, child: Text(preview == null ? 'Upload' : 'Change')),
+                  if (hasNew)
+                    TextButton(
+                      onPressed: () => setState(() => _photo = null),
+                      child: const Text('Remove', style: TextStyle(color: Colors.red)),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -108,6 +195,8 @@ class _TeamFormPageState extends ConsumerState<TeamFormPage> {
               title: 'Basic',
               child: Column(
                 children: [
+                  _photoPicker(),
+                  const SizedBox(height: 10),
                   TextFormField(controller: _name, decoration: const InputDecoration(labelText: 'Full Name *'), validator: (v) => v?.trim().isEmpty == true ? 'Required' : null),
                   const SizedBox(height: 10),
                   if (!editing) TextFormField(controller: _email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email')),

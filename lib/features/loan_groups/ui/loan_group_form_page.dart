@@ -12,6 +12,21 @@ class LoanGroupFormPage extends ConsumerStatefulWidget {
   ConsumerState<LoanGroupFormPage> createState() => _LoanGroupFormPageState();
 }
 
+const _roleLabels = {
+  'ORG_ADMIN': 'Admin',
+  'MANAGER': 'Manager',
+  'FIELD_OFFICER': 'Field Officer',
+  'CASHIER': 'Cashier',
+  'ACCOUNTANT': 'Accountant',
+  'VIEWER': 'Viewer',
+};
+
+const _tenureLabels = {
+  'DAILY': 'Tenure (days)',
+  'WEEKLY': 'Tenure (weeks)',
+  'MONTHLY': 'Tenure (months)',
+};
+
 class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
@@ -23,6 +38,15 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
   final _meetingPlace = TextEditingController();
   final _memberCount = TextEditingController();
   final _cycle = TextEditingController();
+  final _interestRate = TextEditingController();
+  final _tenure = TextEditingController();
+  final _processingFee = TextEditingController();
+  String _emiFrequency = 'WEEKLY';
+  String _interestType = 'FLAT';
+  bool _deductUpfront = false;
+  String? _assignedToId;
+  Map<String, dynamic>? _groupAssignee; // from the group GET, in case not in _team yet
+  List<Map<String, dynamic>> _team = [];
   bool _saving = false;
   bool _loading = false;
 
@@ -30,6 +54,22 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
   void initState() {
     super.initState();
     if (widget.id != null) _load();
+    _loadTeam();
+  }
+
+  Future<void> _loadTeam() async {
+    try {
+      final api = ref.read(apiClientProvider);
+      final d = await api.get('/team', query: {'limit': 500});
+      final list = (d is List ? d : (d is Map && d['data'] is List ? d['data'] : const [])) as List;
+      if (!mounted) return;
+      setState(() => _team = list
+          .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map))
+          .where((u) => u['isActive'] == true)
+          .toList());
+    } catch (_) {
+      // Dropdown just stays empty — the assignee is optional.
+    }
   }
 
   Future<void> _load() async {
@@ -45,6 +85,14 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
       _meetingPlace.text = g['meetingPlace']?.toString() ?? '';
       _memberCount.text = g['memberCount']?.toString() ?? '';
       _cycle.text = g['cycle']?.toString() ?? '';
+      _interestRate.text = g['interestRate']?.toString() ?? '';
+      _tenure.text = g['tenure']?.toString() ?? '';
+      _processingFee.text = g['processingFee']?.toString() ?? '';
+      _emiFrequency = _tenureLabels.containsKey(g['emiFrequency']) ? g['emiFrequency'] as String : 'WEEKLY';
+      _interestType = g['interestType'] == 'REDUCING' ? 'REDUCING' : 'FLAT';
+      _deductUpfront = g['deductInterestUpfront'] == true;
+      _assignedToId = g['assignedToId']?.toString();
+      _groupAssignee = g['assignedTo'] is Map ? Map<String, dynamic>.from(g['assignedTo'] as Map) : null;
     } catch (e) {
       showToast('Load failed: $e', error: true);
     } finally {
@@ -66,6 +114,15 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
         if (_meetingPlace.text.trim().isNotEmpty) 'meetingPlace': _meetingPlace.text.trim(),
         if (_memberCount.text.trim().isNotEmpty) 'memberCount': int.tryParse(_memberCount.text.trim()),
         if (_cycle.text.trim().isNotEmpty) 'cycle': _cycle.text.trim(),
+        // Loan-term defaults — explicit nulls so clearing a value on edit sticks.
+        'interestRate': _interestRate.text.trim().isEmpty ? null : double.tryParse(_interestRate.text.trim()),
+        'tenure': _tenure.text.trim().isEmpty ? null : int.tryParse(_tenure.text.trim()),
+        'emiFrequency': _emiFrequency,
+        'interestType': _interestType,
+        // Upfront deduction only applies to flat-rate interest (same rule as loans).
+        'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
+        'processingFee': _processingFee.text.trim().isEmpty ? null : double.tryParse(_processingFee.text.trim()),
+        'assignedToId': _assignedToId,
       };
       final repo = ref.read(loanGroupRepoProvider);
       if (widget.id == null) {
@@ -81,6 +138,27 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  // Every active team member (Admin and Manager included) can hold a group. If the
+  // group's current assignee isn't in the fetched list yet (still loading, or the
+  // member was deactivated), keep them as an extra item so the dropdown stays valid.
+  List<DropdownMenuItem<String?>> get _assigneeItems {
+    final items = <DropdownMenuItem<String?>>[
+      const DropdownMenuItem(value: null, child: Text('Unassigned')),
+      for (final m in _team)
+        DropdownMenuItem(
+          value: m['id']?.toString(),
+          child: Text('${m['name']} (${_roleLabels[m['role']] ?? m['role']})', overflow: TextOverflow.ellipsis),
+        ),
+    ];
+    if (_assignedToId != null && !_team.any((m) => m['id']?.toString() == _assignedToId)) {
+      items.add(DropdownMenuItem(
+        value: _assignedToId,
+        child: Text(_groupAssignee?['name']?.toString() ?? 'Current assignee'),
+      ));
+    }
+    return items;
   }
 
   @override
@@ -108,6 +186,99 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
                   TextFormField(controller: _memberCount, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Number of Members')),
                   const SizedBox(height: 10),
                   TextFormField(controller: _cycle, decoration: const InputDecoration(labelText: 'Cycle')),
+                ],
+              ),
+            ),
+            SectionCard(
+              title: 'Loan Terms',
+              child: Column(
+                children: [
+                  DropdownButtonFormField<String?>(
+                    key: ValueKey('assignee-${_team.length}-$_assignedToId'),
+                    initialValue: _assignedToId,
+                    decoration: const InputDecoration(labelText: 'Assigned To'),
+                    items: _assigneeItems,
+                    onChanged: (v) => setState(() => _assignedToId = v),
+                  ),
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    controller: _interestRate,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Interest Rate (%)'),
+                    validator: (v) {
+                      final t = v?.trim() ?? '';
+                      if (t.isEmpty) return null;
+                      final n = double.tryParse(t);
+                      return n == null || n < 0 ? 'Invalid rate' : null;
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _tenure,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(labelText: _tenureLabels[_emiFrequency] ?? 'Tenure'),
+                          validator: (v) {
+                            final t = v?.trim() ?? '';
+                            if (t.isEmpty) return null;
+                            final n = int.tryParse(t);
+                            return n == null || n < 1 ? 'Min 1' : null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: _emiFrequency,
+                          decoration: const InputDecoration(labelText: 'EMI Frequency'),
+                          items: const [
+                            DropdownMenuItem(value: 'DAILY', child: Text('DAILY')),
+                            DropdownMenuItem(value: 'WEEKLY', child: Text('WEEKLY')),
+                            DropdownMenuItem(value: 'MONTHLY', child: Text('MONTHLY')),
+                          ],
+                          onChanged: (v) => setState(() => _emiFrequency = v ?? 'WEEKLY'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    initialValue: _interestType,
+                    decoration: const InputDecoration(labelText: 'Interest Calculation'),
+                    items: const [
+                      DropdownMenuItem(value: 'REDUCING', child: Text('Reducing Balance (interest on outstanding)')),
+                      DropdownMenuItem(value: 'FLAT', child: Text('Flat Rate (interest on full principal)')),
+                    ],
+                    onChanged: (v) => setState(() {
+                      _interestType = v ?? 'FLAT';
+                      if (_interestType != 'FLAT') _deductUpfront = false;
+                    }),
+                  ),
+                  if (_interestType == 'FLAT')
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Deduct interest upfront'),
+                      subtitle: const Text(
+                        'Interest is taken out of the disbursed amount; the EMIs repay '
+                        'principal only. Leave off to add the interest into each EMI.',
+                      ),
+                      value: _deductUpfront,
+                      onChanged: (v) => setState(() => _deductUpfront = v),
+                    ),
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    controller: _processingFee,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Processing Fee', prefixText: '₹ '),
+                    validator: (v) {
+                      final t = v?.trim() ?? '';
+                      if (t.isEmpty) return null;
+                      final n = double.tryParse(t);
+                      return n == null || n < 0 ? 'Invalid amount' : null;
+                    },
+                  ),
                 ],
               ),
             ),

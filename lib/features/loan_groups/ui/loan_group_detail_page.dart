@@ -7,6 +7,13 @@ import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
 import '../data/loan_group_repo.dart';
 
+// Prisma Decimals arrive as strings ("12.5"); show them without trailing ".0".
+String _trimNum(dynamic v) {
+  final n = double.tryParse(v?.toString() ?? '');
+  if (n == null) return v?.toString() ?? '-';
+  return n == n.roundToDouble() ? n.toInt().toString() : n.toString();
+}
+
 final groupDetailProvider = FutureProvider.autoDispose.family<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(loanGroupRepoProvider).get(id);
 });
@@ -87,6 +94,35 @@ class LoanGroupDetailPage extends ConsumerWidget {
                 ],
               ),
             ),
+            if (g['assignedTo'] != null || g['interestRate'] != null || g['tenure'] != null ||
+                g['emiFrequency'] != null || g['interestType'] != null || g['processingFee'] != null)
+              SectionCard(
+                title: 'Loan Terms',
+                child: Column(
+                  children: [
+                    if (g['assignedTo'] is Map)
+                      KeyValueRow(label: 'Assigned To', value: (g['assignedTo'] as Map)['name']?.toString() ?? '-'),
+                    if (g['interestRate'] != null)
+                      KeyValueRow(label: 'Interest Rate', value: '${_trimNum(g['interestRate'])}%'),
+                    if (g['tenure'] != null)
+                      KeyValueRow(
+                        label: 'Tenure',
+                        value: '${g['tenure']} ${const {'DAILY': 'days', 'WEEKLY': 'weeks', 'MONTHLY': 'months'}[g['emiFrequency']] ?? ''}'.trim(),
+                      ),
+                    if (g['emiFrequency'] != null)
+                      KeyValueRow(label: 'EMI Frequency', value: g['emiFrequency'].toString()),
+                    if (g['interestType'] != null)
+                      KeyValueRow(
+                        label: 'Interest Calculation',
+                        value: g['interestType'] == 'FLAT'
+                            ? 'Flat Rate${g['deductInterestUpfront'] == true ? ' (interest upfront)' : ''}'
+                            : 'Reducing Balance',
+                      ),
+                    if (g['processingFee'] != null && (double.tryParse(g['processingFee'].toString()) ?? 0) > 0)
+                      KeyValueRow(label: 'Processing Fee', value: formatCurrency(g['processingFee'])),
+                  ],
+                ),
+              ),
             SectionCard(
               title: 'Loans',
               child: loans.when(

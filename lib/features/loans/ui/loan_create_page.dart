@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
+import '../../../core/auth/auth_controller.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
 import '../../customers/data/customer_repo.dart';
+import '../../loan_groups/data/loan_group_repo.dart';
 import 'loan_preview_page.dart';
 
 class LoanCreatePage extends ConsumerStatefulWidget {
@@ -16,6 +19,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   final _formKey = GlobalKey<FormState>();
   Map<String, dynamic>? _customer;
   Map<String, dynamic>? _assignee;
+  Map<String, dynamic>? _group;
   String _loanType = 'PERSONAL';
   String _tenureType = 'MONTHS';
   String _interestType = 'REDUCING';
@@ -121,11 +125,115 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
     if (picked != null) setState(() => _assignee = picked);
   }
 
+  Future<void> _pickGroup() async {
+    final picked = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _PickerSheet<Map<String, dynamic>>(
+        title: 'Select Loan Group',
+        fetcher: (search) async {
+          final r = await ref.read(loanGroupRepoProvider).list(page: 1, limit: 50, search: search);
+          return ((r['data'] as List?) ?? [])
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .where((g) => g['isActive'] == true)
+              .toList();
+        },
+        labelBuilder: (m) => '${m['groupNumber'] ?? ''} — ${m['name'] ?? ''}',
+        subtitleBuilder: (m) => [
+          m['leaderName']?.toString() ?? '',
+          if (m['memberCount'] != null) '${m['memberCount']} members',
+        ].where((s) => s.isNotEmpty).join(' · '),
+      ),
+    );
+    if (picked != null) {
+      setState(() {
+        _group = picked;
+        _applyGroupDefaults(picked);
+      });
+      _prefillGroupAssignee(picked);
+    }
+  }
+
+  // Seed the form with the group's default loan terms (captured on the group
+  // form). Group defaults are informational — each loan stores its own terms —
+  // so every field stays editable; re-picking a group re-applies them.
+  void _applyGroupDefaults(Map<String, dynamic> g) {
+    if (g['interestRate'] != null) _rate.text = g['interestRate'].toString();
+    if (g['tenure'] != null) _tenure.text = g['tenure'].toString();
+    const unitByFrequency = {'DAILY': 'DAYS', 'WEEKLY': 'WEEKS', 'MONTHLY': 'MONTHS'};
+    final unit = unitByFrequency[g['emiFrequency']];
+    if (unit != null) _tenureType = unit;
+    if (g['interestType'] == 'FLAT' || g['interestType'] == 'REDUCING') {
+      _interestType = g['interestType'] as String;
+      _deductUpfront = _interestType == 'FLAT' && g['deductInterestUpfront'] == true;
+    } else if (unit != null) {
+      // No method stored on the group — fall back to the Unit dropdown's
+      // convention (sub-monthly → flat, monthly → reducing).
+      _interestType = _isPeriodUnit ? 'FLAT' : 'REDUCING';
+      if (_interestType != 'FLAT') _deductUpfront = false;
+    }
+    if (g['processingFee'] != null) _fee.text = g['processingFee'].toString();
+  }
+
+  // Adopt the group's assignee only if they're still an active field officer
+  // (same guard as the web form) — the group itself can be held by any role,
+  // and a stale/deactivated assignee shouldn't ride into the loan silently.
+  Future<void> _prefillGroupAssignee(Map<String, dynamic> g) async {
+    final assignedToId = g['assignedToId']?.toString();
+    if (assignedToId == null || assignedToId.isEmpty) return;
+    if ((g['assignedTo'] as Map?)?['role'] != 'FIELD_OFFICER') return;
+    try {
+      final api = ref.read(apiClientProvider);
+      final d = await api.get('/team');
+      final list = (d is List ? d : (d is Map && d['data'] is List ? d['data'] : const [])) as List;
+      Map<String, dynamic>? member;
+      for (final e in list) {
+        final u = Map<String, dynamic>.from(e as Map);
+        if (u['id']?.toString() == assignedToId && u['isActive'] == true && u['role'] == 'FIELD_OFFICER') {
+          member = u;
+          break;
+        }
+      }
+      // The officer may have picked a different group (or an assignee) while
+      // the team list was loading — only apply if this group is still current.
+      if (member == null || !mounted || _group?['id'] != g['id']) return;
+      setState(() => _assignee = member);
+    } catch (_) {
+      // Prefill is best-effort; the assignee can still be picked manually.
+    }
+  }
+
+  bool get _groupHasDefaults {
+    final g = _group;
+    if (g == null) return false;
+    return g['interestRate'] != null || g['tenure'] != null || g['emiFrequency'] != null ||
+        g['interestType'] != null || g['processingFee'] != null;
+  }
+
+  String get _groupDefaultsSummary {
+    final g = _group!;
+    final freq = g['emiFrequency']?.toString();
+    final tenureUnit = freq == 'DAILY' ? 'days' : freq == 'WEEKLY' ? 'weeks' : 'months';
+    final parts = <String>[
+      if (g['interestRate'] != null) "${g['interestRate']}% interest",
+      if (g['tenure'] != null) "${g['tenure']} $tenureUnit tenure",
+      if (freq != null) '${freq.toLowerCase()} EMI',
+      if (g['interestType'] != null)
+        g['interestType'] == 'FLAT'
+            ? "flat rate${g['deductInterestUpfront'] == true ? ', interest upfront' : ''}"
+            : 'reducing balance',
+      if (g['processingFee'] != null && (double.tryParse(g['processingFee'].toString()) ?? 0) > 0)
+        "₹${g['processingFee']} processing fee",
+    ];
+    return parts.join(' · ');
+  }
+
   // Validate, assemble the request body, then push the preview screen. The actual POST
   // happens on the preview after the user confirms — mirroring the web create wizard's
   // "Review & Confirm" step.
   Future<void> _review() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_loanType == 'GROUP' && _group == null) return showToast('Select a loan group', error: true);
     if (_customer == null) return showToast('Select a customer', error: true);
     if (_assignee == null) {
       final proceed = await confirmDialog(
@@ -157,6 +265,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       'lateFeePerDay': double.tryParse(_lateFee.text) ?? 0,
       if (_notes.text.trim().isNotEmpty) 'notes': _notes.text.trim(),
     };
+    if (_loanType == 'GROUP') {
+      body['groupId'] = _group!['id'];
+    }
     if (_loanType == 'GOLD') {
       body['goldWeight'] = double.tryParse(_goldWeight.text);
       body['goldPurity'] = _goldPurity.text.trim();
@@ -213,6 +324,55 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: _loanType,
+                    decoration: const InputDecoration(labelText: 'Loan Type *'),
+                    items: [
+                      const DropdownMenuItem(value: 'PERSONAL', child: Text('Personal')),
+                      const DropdownMenuItem(value: 'GOLD', child: Text('Gold')),
+                      if (ref.watch(authProvider).org?.feature('enableGroupLoan') == true)
+                        const DropdownMenuItem(value: 'GROUP', child: Text('Group')),
+                      const DropdownMenuItem(value: 'VEHICLE', child: Text('Vehicle')),
+                      const DropdownMenuItem(value: 'PROPERTY', child: Text('Property/Mortgage')),
+                      const DropdownMenuItem(value: 'BUSINESS', child: Text('Business')),
+                      const DropdownMenuItem(value: 'AGRICULTURE', child: Text('Agriculture')),
+                      const DropdownMenuItem(value: 'EDUCATION', child: Text('Education')),
+                      const DropdownMenuItem(value: 'DAILY', child: Text('Daily')),
+                      const DropdownMenuItem(value: 'WEEKLY', child: Text('Weekly')),
+                    ],
+                    onChanged: (v) => setState(() {
+                      _loanType = v!;
+                      if (_loanType != 'GROUP') _group = null;
+                    }),
+                  ),
+                  if (_loanType == 'GROUP')
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.groups),
+                      title: Text(_group == null
+                          ? 'Select Loan Group *'
+                          : '${_group!['groupNumber'] ?? ''} — ${_group!['name'] ?? ''}'),
+                      subtitle: _group == null ? null : Text(_group!['leaderName']?.toString() ?? ''),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: _pickGroup,
+                    ),
+                  if (_loanType == 'GROUP' && _groupHasDefaults)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        'Prefilled from group defaults: $_groupDefaultsSummary. '
+                        'You can still edit any of these below.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: AppColors.primary),
+                      ),
+                    ),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.person),
@@ -228,22 +388,6 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                     subtitle: _assignee == null ? null : Text(_assignee!['phone']?.toString() ?? ''),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _pickAssignee,
-                  ),
-                  DropdownButtonFormField<String>(
-                    initialValue: _loanType,
-                    decoration: const InputDecoration(labelText: 'Loan Type *'),
-                    items: const [
-                      DropdownMenuItem(value: 'PERSONAL', child: Text('Personal')),
-                      DropdownMenuItem(value: 'GOLD', child: Text('Gold')),
-                      DropdownMenuItem(value: 'VEHICLE', child: Text('Vehicle')),
-                      DropdownMenuItem(value: 'PROPERTY', child: Text('Property/Mortgage')),
-                      DropdownMenuItem(value: 'BUSINESS', child: Text('Business')),
-                      DropdownMenuItem(value: 'AGRICULTURE', child: Text('Agriculture')),
-                      DropdownMenuItem(value: 'EDUCATION', child: Text('Education')),
-                      DropdownMenuItem(value: 'DAILY', child: Text('Daily')),
-                      DropdownMenuItem(value: 'WEEKLY', child: Text('Weekly')),
-                    ],
-                    onChanged: (v) => setState(() => _loanType = v!),
                   ),
                 ],
               ),
