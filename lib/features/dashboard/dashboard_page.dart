@@ -83,7 +83,7 @@ class DashboardPage extends ConsumerWidget {
           // `showLoans` gate). For chit-only orgs the Chit Funds section owns the cash
           // position, so these loan-centric cards would just show empty/duplicate figures.
           if (features['enableLoans'] == true) _fieldOfficerStats(context, d),
-          _pendingVerificationList(d),
+          _PendingVerificationListCard(d: d),
           _overdueLoansList(context, d),
           if (chitEnabled) _chitfundSection(context, d, auth, features),
           _dailyCollectionChart(d),
@@ -97,7 +97,7 @@ class DashboardPage extends ConsumerWidget {
           if (!chitOwnsDayCash) _dayReportCard(d),
           if (features['enableSavings'] == true) _savingsPoolGradientCard(d),
           if (features['enableLoans'] == true) _upcomingOverdueCard(context, d, isAdmin),
-          if (isAdmin) _pendingVerificationByAgentCard(context, d),
+          if (isAdmin) _PendingVerificationByAgentCard(d: d),
           if (features['enableLoans'] == true) ...[
             _loansByTypeCard(d),
             _loansByStatusCard(d),
@@ -635,80 +635,7 @@ class DashboardPage extends ConsumerWidget {
     );
   }
 
-  // Field officers don't receive the pre-combined pending-verification total (it's
-  // computed admin-only server-side), so sum the per-source loan + chit figures; fall
-  // back to the combined field when the per-source figures aren't present.
-  num _pvCount(Map<String, dynamic> d) {
-    final loan = toNum(d['pendingVerificationLoanCount']);
-    final chit = toNum(d['pendingVerificationChitCount']);
-    if (loan > 0 || chit > 0) return loan + chit;
-    return toNum(d['pendingVerificationCount']);
-  }
-
-  num _pvAmount(Map<String, dynamic> d) {
-    final loan = toNum(d['pendingVerificationLoanAmount']);
-    final chit = toNum(d['pendingVerificationChitAmount']);
-    if (loan > 0 || chit > 0) return loan + chit;
-    return toNum(d['pendingVerificationAmount']);
-  }
-
   // === Lists ===
-  Widget _pendingVerificationList(Map<String, dynamic> d) {
-    final list = (d['pendingCollections'] as List?) ?? const [];
-    if (list.isEmpty) return const SizedBox.shrink();
-    // True count from the API (uncapped); the list below shows only the most recent.
-    final count = _pvCount(d);
-    final amount = _pvAmount(d);
-    final badgeCount = count > 0 ? count.toInt() : list.length;
-    return SectionCard(
-      title: 'Pending Verification ($badgeCount)',
-      child: Column(
-        children: [
-          ...list.map((c) {
-            final m = Map<String, dynamic>.from(c as Map);
-            final cust = Map<String, dynamic>.from(m['customer'] ?? {});
-            final loan = Map<String, dynamic>.from(m['loan'] ?? {});
-            final isChit = m['sourceType'] == 'CHITFUND';
-            final chit = Map<String, dynamic>.from(m['chitfund'] ?? {});
-            final ref = isChit
-                ? 'Chit ${chit['chitNumber'] ?? chit['name'] ?? ''}${m['monthNumber'] != null ? ' · M${m['monthNumber']}' : ''}'
-                : 'Loan #${loan['loanNumber'] ?? '-'}';
-            return ListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              leading: const Icon(Icons.shield_outlined, color: AppColors.warning),
-              title: Text('${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim()),
-              subtitle: Text('$ref · ${m['receiptNumber'] ?? '-'}', style: const TextStyle(fontSize: 11)),
-              trailing: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(formatCurrency(m['amount']), style: const TextStyle(fontWeight: FontWeight.w700)),
-                  Text(formatDate(m['collectedAt']), style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
-                ],
-              ),
-            );
-          }),
-          // Running total of everything awaiting verification (uncapped) — mirrors the
-          // admin card so field officers see their total too.
-          if (amount > 0) ...[
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  const Text('Total: ', style: TextStyle(fontSize: 13, color: AppColors.warning)),
-                  Text(formatCurrency(amount), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.warning)),
-                ],
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
   Widget _overdueLoansList(BuildContext context, Map<String, dynamic> d) {
     final list = ((d['overdueLoans'] as List?) ?? const []).take(10).toList();
     if (list.isEmpty) return const SizedBox.shrink();
@@ -815,32 +742,6 @@ class DashboardPage extends ConsumerWidget {
           ?trailing,
         ],
       ),
-    );
-  }
-
-  Widget _pendingVerificationByAgentCard(BuildContext context, Map<String, dynamic> d) {
-    // Use server-grouped pendingByAgent for accurate totals.
-    final agents = ((d['pendingByAgent'] as List?) ?? const [])
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
-    return SectionCard(
-      title: 'Pending Verification (${d['pendingVerificationCount'] ?? 0})',
-      actions: agents.isEmpty ? null : [TextButton(onPressed: () => context.push('/collections/verify'), child: const Text('Verify all'))],
-      child: agents.isEmpty
-          ? const EmptyView(message: 'No collections pending verification', icon: Icons.shield_outlined)
-          : Column(
-              children: agents.map((a) {
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  onTap: () => context.push('/collections/verify?collectedById=${a['id']}&name=${Uri.encodeComponent(a['name']?.toString() ?? '')}'),
-                  leading: Avatar(url: a['photo']?.toString(), name: a['name']?.toString() ?? 'U', size: 32),
-                  title: Text(a['name']?.toString() ?? 'Unknown'),
-                  subtitle: Text('${a['count']} collection${a['count'] == 1 ? '' : 's'}', style: const TextStyle(fontSize: 11)),
-                  trailing: Text(formatCurrency(a['total']), style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.warning)),
-                );
-              }).toList(),
-            ),
     );
   }
 
@@ -1333,6 +1234,220 @@ class _NotificationsBell extends ConsumerWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+// Today/All scope pill for the Pending Verification cards. 'all' shows the full
+// pending backlog; 'today' narrows to collections made today (the API sends both
+// slices, so switching never refetches).
+class _PvScopeToggle extends StatelessWidget {
+  final String scope;
+  final ValueChanged<String> onChanged;
+  const _PvScopeToggle({required this.scope, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(8)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (value, label) in const [('today', 'Today'), ('all', 'All')])
+            GestureDetector(
+              onTap: () => onChanged(value),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: scope == value ? Colors.white : Colors.transparent,
+                  borderRadius: BorderRadius.circular(6),
+                  boxShadow: scope == value
+                      ? [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 2)]
+                      : null,
+                ),
+                child: Text(label, style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: scope == value ? AppColors.textPrimary : AppColors.textSecondary,
+                )),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// Field officer's Pending Verification list with the Today/All scope toggle.
+class _PendingVerificationListCard extends StatefulWidget {
+  final Map<String, dynamic> d;
+  const _PendingVerificationListCard({required this.d});
+  @override
+  State<_PendingVerificationListCard> createState() => _PendingVerificationListCardState();
+}
+
+class _PendingVerificationListCardState extends State<_PendingVerificationListCard> {
+  String _scope = 'all';
+
+  bool _collectedToday(Map<String, dynamic> m) {
+    final x = DateTime.tryParse(m['collectedAt']?.toString() ?? '')?.toLocal();
+    if (x == null) return false;
+    final n = DateTime.now();
+    return x.year == n.year && x.month == n.month && x.day == n.day;
+  }
+
+  // Field officers don't receive the pre-combined pending-verification total (it's
+  // computed admin-only server-side), so sum the per-source loan + chit figures; fall
+  // back to the combined field when the per-source figures aren't present.
+  num get _count {
+    final d = widget.d;
+    if (_scope == 'today') {
+      return toNum(d['pendingVerificationLoanTodayCount']) + toNum(d['pendingVerificationChitTodayCount']);
+    }
+    final loan = toNum(d['pendingVerificationLoanCount']);
+    final chit = toNum(d['pendingVerificationChitCount']);
+    if (loan > 0 || chit > 0) return loan + chit;
+    return toNum(d['pendingVerificationCount']);
+  }
+
+  num get _amount {
+    final d = widget.d;
+    if (_scope == 'today') {
+      return toNum(d['pendingVerificationLoanTodayAmount']) + toNum(d['pendingVerificationChitTodayAmount']);
+    }
+    final loan = toNum(d['pendingVerificationLoanAmount']);
+    final chit = toNum(d['pendingVerificationChitAmount']);
+    if (loan > 0 || chit > 0) return loan + chit;
+    return toNum(d['pendingVerificationAmount']);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final all = ((widget.d['pendingCollections'] as List?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    // Card visibility follows the full backlog so toggling to an empty Today
+    // view never hides the toggle itself.
+    if (all.isEmpty) return const SizedBox.shrink();
+    final rows = _scope == 'today' ? all.where(_collectedToday).toList() : all;
+    // True count from the API (uncapped); the list below shows only the most recent.
+    final count = _count;
+    final amount = _amount;
+    final badgeCount = count > 0 ? count.toInt() : rows.length;
+    return SectionCard(
+      title: 'Pending Verification ($badgeCount)',
+      actions: [_PvScopeToggle(scope: _scope, onChanged: (v) => setState(() => _scope = v))],
+      child: Column(
+        children: [
+          if (rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text(
+                'Nothing collected today is pending verification',
+                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+              ),
+            ),
+          ...rows.map((m) {
+            final cust = Map<String, dynamic>.from(m['customer'] ?? {});
+            final loan = Map<String, dynamic>.from(m['loan'] ?? {});
+            final isChit = m['sourceType'] == 'CHITFUND';
+            final chit = Map<String, dynamic>.from(m['chitfund'] ?? {});
+            final ref = isChit
+                ? 'Chit ${chit['chitNumber'] ?? chit['name'] ?? ''}${m['monthNumber'] != null ? ' · M${m['monthNumber']}' : ''}'
+                : 'Loan #${loan['loanNumber'] ?? '-'}';
+            return ListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              leading: const Icon(Icons.shield_outlined, color: AppColors.warning),
+              title: Text('${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim()),
+              subtitle: Text('$ref · ${m['receiptNumber'] ?? '-'}', style: const TextStyle(fontSize: 11)),
+              trailing: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(formatCurrency(m['amount']), style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text(formatDate(m['collectedAt']), style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+                ],
+              ),
+            );
+          }),
+          // Running total of everything awaiting verification in this scope
+          // (uncapped) — mirrors the admin card so field officers see it too.
+          if (amount > 0) ...[
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  const Text('Total: ', style: TextStyle(fontSize: 13, color: AppColors.warning)),
+                  Text(formatCurrency(amount), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.warning)),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// Admin Pending Verification card grouped by field agent, with the Today/All
+// scope toggle. Each pendingByAgent entry carries both the all-time and the
+// today-collected slice, so switching scopes never refetches.
+class _PendingVerificationByAgentCard extends StatefulWidget {
+  final Map<String, dynamic> d;
+  const _PendingVerificationByAgentCard({required this.d});
+  @override
+  State<_PendingVerificationByAgentCard> createState() => _PendingVerificationByAgentCardState();
+}
+
+class _PendingVerificationByAgentCardState extends State<_PendingVerificationByAgentCard> {
+  String _scope = 'all';
+
+  @override
+  Widget build(BuildContext context) {
+    final today = _scope == 'today';
+    // Use server-grouped pendingByAgent for accurate totals.
+    final agents = ((widget.d['pendingByAgent'] as List?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .map((a) => (
+              agent: a,
+              count: toNum(a[today ? 'todayCount' : 'count']),
+              total: toNum(a[today ? 'todayTotal' : 'total']),
+            ))
+        .where((s) => s.count > 0)
+        .toList();
+    final headline = today
+        ? toNum(widget.d['pendingVerificationLoanTodayCount']) + toNum(widget.d['pendingVerificationChitTodayCount'])
+        : toNum(widget.d['pendingVerificationCount']);
+    return SectionCard(
+      title: 'Pending Verification (${headline.toInt()})',
+      actions: [
+        _PvScopeToggle(scope: _scope, onChanged: (v) => setState(() => _scope = v)),
+        if (agents.isNotEmpty)
+          TextButton(onPressed: () => context.push('/collections/verify'), child: const Text('Verify all')),
+      ],
+      child: agents.isEmpty
+          ? EmptyView(
+              message: today ? 'Nothing collected today is pending verification' : 'No collections pending verification',
+              icon: Icons.shield_outlined,
+            )
+          : Column(
+              children: agents.map((s) {
+                final a = s.agent;
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  onTap: () => context.push('/collections/verify?collectedById=${a['id']}&name=${Uri.encodeComponent(a['name']?.toString() ?? '')}'),
+                  leading: Avatar(url: a['photo']?.toString(), name: a['name']?.toString() ?? 'U', size: 32),
+                  title: Text(a['name']?.toString() ?? 'Unknown'),
+                  subtitle: Text('${s.count.toInt()} collection${s.count.toInt() == 1 ? '' : 's'}', style: const TextStyle(fontSize: 11)),
+                  trailing: Text(formatCurrency(s.total), style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.warning)),
+                );
+              }).toList(),
+            ),
     );
   }
 }
