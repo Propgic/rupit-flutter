@@ -87,7 +87,7 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                 }
               },
               itemBuilder: (_) => [
-                if (isAdmin && correctionEnabled && (l['status'] == 'ACTIVE' || l['status'] == 'CLOSED'))
+                if (isAdmin && correctionEnabled && l['status'] == 'ACTIVE')
                   const PopupMenuItem(value: 'correct', child: Text('Correct Terms')),
                 if (isMgr && l['status'] == 'APPROVED') const PopupMenuItem(value: 'disburse', child: Text('Disburse')),
                 if (isMgr && (l['status'] == 'PENDING' || l['status'] == 'APPROVED')) const PopupMenuItem(value: 'reject', child: Text('Reject')),

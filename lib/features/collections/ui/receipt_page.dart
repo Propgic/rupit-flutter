@@ -108,13 +108,22 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
           final chit = Map<String, dynamic>.from(collection['chitfund'] ?? {});
           final orgRaw = r['org'] ?? r['organization'];
           final org = Map<String, dynamic>.from(orgRaw is Map ? orgRaw : {});
+          // The receipt payload carries the org's *current* settings. Prefer them over the
+          // session copy: a mobile session can outlive a Loan Settings change by weeks, and
+          // gating on the stale cache hides the Edit button until the next login.
+          final orgSettings =
+              Map<String, dynamic>.from(org['settings'] is Map ? org['settings'] as Map : {});
           final auth = ref.watch(authProvider);
           final role = auth.user?.role;
           final status = collection['verificationStatus']?.toString() ?? 'PENDING';
           // Mirrors the backend. The org master switch must be on for any edit; a verified
           // collection is governed by the org's verifiedCollectionEditPolicy.
-          final editingEnabled = auth.org?.allowCollectionEdit == true;
-          final verifiedEditPolicy = auth.org?.verifiedCollectionEditPolicy ?? 'WINDOW_24H';
+          final editingEnabled = orgSettings.containsKey('allowCollectionEdit')
+              ? orgSettings['allowCollectionEdit'] == true
+              : auth.org?.allowCollectionEdit == true;
+          final verifiedEditPolicy = orgSettings['verifiedCollectionEditPolicy']?.toString() ??
+              auth.org?.verifiedCollectionEditPolicy ??
+              'WINDOW_24H';
           final verifiedAt = DateTime.tryParse(collection['verifiedAt']?.toString() ?? '');
           final withinVerifiedEditWindow = verifiedAt != null &&
               DateTime.now().difference(verifiedAt.toLocal()) <= const Duration(hours: 24);
