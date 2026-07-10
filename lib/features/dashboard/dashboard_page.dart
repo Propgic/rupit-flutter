@@ -173,7 +173,7 @@ class DashboardPage extends ConsumerWidget {
                 subtitle: 'across active chits', icon: Icons.groups,
                 gradient: const LinearGradient(colors: [Color(0xFF3B82F6), Color(0xFF4F46E5)])),
             _gradientStatTile('Auctions To Conduct', '${c['auctionsDueCount'] ?? 0}',
-                subtitle: '${c['auctionsTodayCount'] ?? 0} due today', icon: Icons.gavel,
+                subtitle: '${formatCurrency(c['auctionsToConductAmount'])} · ${c['auctionsTodayCount'] ?? 0} due today', icon: Icons.gavel,
                 gradient: const LinearGradient(colors: [Color(0xFF8B5CF6), Color(0xFF7C3AED)]),
                 onTap: () => showModalBottomSheet(
                       context: context,
