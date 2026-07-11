@@ -273,6 +273,154 @@ class _ImageViewerPage extends StatelessWidget {
   }
 }
 
+// One selectable row in [showSearchableSelect]. [label] is what's shown; [searchText]
+// is what the search box matches against (defaults to the label when omitted, so pass
+// the raw name/number here when the label carries extra formatting like "— ₹x due").
+class SelectOption<T> {
+  final T value;
+  final String label;
+  final String searchText;
+  SelectOption({required this.value, required this.label, String? searchText})
+      : searchText = (searchText ?? label).toLowerCase();
+}
+
+// A searchable replacement for a long DropdownButton: opens a bottom sheet with a search
+// box over [options] and returns the chosen value (or null if dismissed). Use with a
+// SearchableSelectField trigger, or call directly on any tap.
+Future<T?> showSearchableSelect<T>(
+  BuildContext context, {
+  required String title,
+  required List<SelectOption<T>> options,
+  T? selected,
+  String searchHint = 'Search...',
+}) {
+  return showModalBottomSheet<T>(
+    context: context,
+    isScrollControlled: true,
+    builder: (_) => _SearchableSelectSheet<T>(
+      title: title,
+      options: options,
+      selected: selected,
+      searchHint: searchHint,
+    ),
+  );
+}
+
+class _SearchableSelectSheet<T> extends StatefulWidget {
+  final String title;
+  final List<SelectOption<T>> options;
+  final T? selected;
+  final String searchHint;
+  const _SearchableSelectSheet({required this.title, required this.options, required this.selected, required this.searchHint});
+  @override
+  State<_SearchableSelectSheet<T>> createState() => _SearchableSelectSheetState<T>();
+}
+
+class _SearchableSelectSheetState<T> extends State<_SearchableSelectSheet<T>> {
+  final _search = TextEditingController();
+  String _q = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final q = _q.trim().toLowerCase();
+    final filtered = q.isEmpty ? widget.options : widget.options.where((o) => o.searchText.contains(q)).toList();
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (_, ctrl) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+              child: Row(
+                children: [
+                  Expanded(child: Text(widget.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600))),
+                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextField(
+                controller: _search,
+                autofocus: true,
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search),
+                  hintText: widget.searchHint,
+                  suffixIcon: _q.isEmpty
+                      ? null
+                      : IconButton(icon: const Icon(Icons.clear), onPressed: () { _search.clear(); setState(() => _q = ''); }),
+                ),
+                onChanged: (v) => setState(() => _q = v),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Expanded(
+              child: filtered.isEmpty
+                  ? const Center(child: Text('No matches', style: TextStyle(color: AppColors.textSecondary)))
+                  : ListView.separated(
+                      controller: ctrl,
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (ctx, i) {
+                        final o = filtered[i];
+                        final isSel = o.value == widget.selected;
+                        return ListTile(
+                          title: Text(o.label),
+                          trailing: isSel ? const Icon(Icons.check, color: AppColors.primary) : null,
+                          selected: isSel,
+                          onTap: () => Navigator.pop(context, o.value),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// A form-field-styled trigger for [showSearchableSelect]: looks like a DropdownButtonFormField
+// (bordered, labelled, chevron) but opens the searchable sheet on tap. [display] is the
+// current selection's text; null shows [hint] in the muted style.
+class SearchableSelectField extends StatelessWidget {
+  final String label;
+  final String? display;
+  final String hint;
+  final VoidCallback? onTap;
+  const SearchableSelectField({super.key, required this.label, this.display, this.hint = 'Select...', this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: InputDecorator(
+        decoration: InputDecoration(labelText: label, enabled: onTap != null),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                display ?? hint,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: display == null ? AppColors.textMuted : AppColors.textPrimary),
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down, color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 Future<bool> confirmDialog(BuildContext context, {String title = 'Confirm', required String message, String confirmText = 'Confirm', bool destructive = false}) async {
   final res = await showDialog<bool>(
     context: context,

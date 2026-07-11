@@ -1557,6 +1557,29 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
           orElse: () => null,
         );
 
+    // Options for the searchable Member picker. The label carries the full "— ₹x due (paid …)"
+    // text (unchanged from the old dropdown); searchText is just the ticket# + name so the
+    // amount suffix doesn't get in the way of matching what the collector types.
+    String memberLabel(Map<String, dynamic> d) {
+      final paid = _paidForDue(d);
+      final nm = '#${d['ticketNumber']} ${d['customerName'] ?? 'Member'}${d['hasWonAuction'] == true ? ' (won)' : ''}';
+      return paid > 0
+          ? '$nm — ${formatCurrency(remainingFor(d))} due (paid ${formatCurrency(paid)} of ${formatCurrency(d['expectedAmount'])})'
+          : '$nm — ${formatCurrency(d['expectedAmount'])}';
+    }
+    final memberOptions = selectable.map((raw) {
+      final d = Map<String, dynamic>.from(raw as Map);
+      return SelectOption<String>(
+        value: d['memberId'].toString(),
+        label: memberLabel(d),
+        searchText: '#${d['ticketNumber']} ${d['customerName'] ?? ''}',
+      );
+    }).toList();
+    String? selectedMemberLabel;
+    for (final o in memberOptions) {
+      if (o.value == _selectedMemberId) { selectedMemberLabel = o.label; break; }
+    }
+
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: DraggableScrollableSheet(
@@ -1612,24 +1635,22 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
             if (_loading)
               const LoadingView()
             else if (_dues != null) ...[
-              DropdownButtonFormField<String>(
-                initialValue: _selectedMemberId,
-                decoration: const InputDecoration(labelText: 'Member'),
-                isExpanded: true,
-                items: selectable.map((raw) {
-                  final d = Map<String, dynamic>.from(raw as Map);
-                  // Waterfall-aware paid (verified + pending incl. spillover) for the label.
-                  final paid = _paidForDue(d);
-                  final name = '#${d['ticketNumber']} ${d['customerName'] ?? 'Member'}${d['hasWonAuction'] == true ? ' (won)' : ''}';
-                  final label = paid > 0
-                      ? '$name — ${formatCurrency(remainingFor(d))} due (paid ${formatCurrency(paid)} of ${formatCurrency(d['expectedAmount'])})'
-                      : '$name — ${formatCurrency(d['expectedAmount'])}';
-                  return DropdownMenuItem(
-                    value: d['memberId'].toString(),
-                    child: Text(label, overflow: TextOverflow.ellipsis),
-                  );
-                }).toList(),
-                onChanged: selectable.isEmpty ? null : _onSelectMember,
+              SearchableSelectField(
+                label: 'Member',
+                display: selectedMemberLabel,
+                hint: 'Select a member',
+                onTap: selectable.isEmpty
+                    ? null
+                    : () async {
+                        final picked = await showSearchableSelect<String>(
+                          context,
+                          title: 'Select Member',
+                          options: memberOptions,
+                          selected: _selectedMemberId,
+                          searchHint: 'Search by name or ticket #',
+                        );
+                        if (picked != null) _onSelectMember(picked);
+                      },
               ),
               if (selectable.isEmpty)
                 const Padding(
