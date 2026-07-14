@@ -234,7 +234,12 @@ class _CollectionListPageState extends ConsumerState<CollectionListPage> {
 
   @override
   Widget build(BuildContext context) {
-    final canCreate = ref.watch(authProvider).hasPermission('collections.create');
+    final auth = ref.watch(authProvider);
+    final canCreate = auth.hasPermission('collections.create');
+    // Group collection is available only when group loans are enabled, mirroring
+    // the web CollectionList gate (`features.enableGroupLoan`).
+    final showGroupCollection = auth.org?.feature('enableGroupLoan') == true
+        && auth.hasPermission('collections.create');
     final activeFilterCount = (_loanType != null ? 1 : 0) + (_collectedById != null ? 1 : 0);
     return Scaffold(
       drawer: const AppDrawer(),
@@ -264,6 +269,8 @@ class _CollectionListPageState extends ConsumerState<CollectionListPage> {
                 ),
             ],
           ),
+          if (showGroupCollection)
+            IconButton(icon: const Icon(Icons.groups_outlined), tooltip: 'Group Collection', onPressed: () => context.push('/collections/group')),
           IconButton(icon: const Icon(Icons.map_outlined), tooltip: 'Route Map', onPressed: () => context.push('/collections/map')),
           IconButton(icon: const Icon(Icons.summarize_outlined), tooltip: 'Daily Summary', onPressed: () => context.push('/collections/summary')),
           IconButton(icon: const Icon(Icons.verified_outlined), tooltip: 'Verify', onPressed: () => context.push('/collections/verify')),
