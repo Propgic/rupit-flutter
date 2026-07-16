@@ -324,7 +324,10 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
           child: Column(
             children: [
               KeyValueRow(label: 'Paid', value: formatCurrency(l['totalPaid']), valueColor: AppColors.accent),
-              KeyValueRow(label: 'Outstanding', value: formatCurrency(l['outstanding']), valueColor: AppColors.danger),
+              // Show `balance` (totalPayable − totalPaid) — the same figure the loan list shows.
+              // The schedule-derived `outstanding` collapses to 0 once every EMI row is marked
+              // paid (e.g. after an advance), so it can disagree with the list's balance.
+              KeyValueRow(label: 'Outstanding', value: formatCurrency(l['balance']), valueColor: AppColors.danger),
               KeyValueRow(label: 'Due', value: formatCurrency(showDue ? dueAmount : 0), valueColor: AppColors.warning),
               KeyValueRow(label: 'Over Due', value: formatCurrency(l['overdueAmount']), valueColor: AppColors.danger),
             ],

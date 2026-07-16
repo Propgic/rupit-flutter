@@ -108,6 +108,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     ['NEVER', 'Never', 'Once verified, a collection is locked.'],
   ];
   String _verifiedCollectionEditPolicy = 'WINDOW_24H';
+  // Lets a field officer correct their OWN collection until it's verified. Independent of
+  // _allowCollectionEdit (which governs admin edits of already-verified collections).
+  bool _allowFieldOfficerCollectionEdit = true;
   // When true, a PENDING (unverified) collection already lowers the loan's shown balance.
   bool _includePendingInBalance = false;
   // When true (default), the customer number shows under the name in listings.
@@ -205,6 +208,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         final vcep = s['verifiedCollectionEditPolicy']?.toString();
         _verifiedCollectionEditPolicy = _verifiedEditPolicies.any((p) => p[0] == vcep) ? vcep! : 'WINDOW_24H';
         _allowCollectionEdit = s['allowCollectionEdit'] == true;
+        _allowFieldOfficerCollectionEdit = s['allowFieldOfficerCollectionEdit'] != false;
         _includePendingInBalance = s['includePendingInBalance'] == true;
         _showCustomerNumber = s['showCustomerNumber'] != false;
         final lfv = s['loanFieldVisibility'];
@@ -265,6 +269,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         // Collection edit controls
         'allowCollectionEdit': _allowCollectionEdit,
         'verifiedCollectionEditPolicy': _verifiedCollectionEditPolicy,
+        'allowFieldOfficerCollectionEdit': _allowFieldOfficerCollectionEdit,
         'includePendingInBalance': _includePendingInBalance,
         'showCustomerNumber': _showCustomerNumber,
         // Per-role loan field visibility (nested, like web)
@@ -288,6 +293,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       await ref.read(authProvider.notifier).updateOrgSettings(
             allowCollectionEdit: _allowCollectionEdit,
             verifiedCollectionEditPolicy: _verifiedCollectionEditPolicy,
+            allowFieldOfficerCollectionEdit: _allowFieldOfficerCollectionEdit,
           );
       showToast('Settings saved');
       _load();
@@ -483,6 +489,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ],
               ),
             ),
+          ),
+          const Divider(),
+          SwitchListTile(
+            title: const Text('Allow field officers to edit before verification'),
+            subtitle: const Text(
+                'On: a field officer can correct their own collection until it is verified. Off: field officers cannot edit collections. Works independently of the master switch above.'),
+            contentPadding: EdgeInsets.zero,
+            value: _allowFieldOfficerCollectionEdit,
+            onChanged: (v) => setState(() => _allowFieldOfficerCollectionEdit = v),
           ),
           const Divider(),
           SwitchListTile(

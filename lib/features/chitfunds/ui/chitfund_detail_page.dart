@@ -7,6 +7,7 @@ import '../../../core/auth/auth_controller.dart';
 import '../../../core/auth/auth_models.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
+import '../../../core/utils/location.dart';
 import '../../../core/widgets/common.dart';
 import '../data/chitfund_repo.dart';
 import '../../customers/data/customer_repo.dart';
@@ -1493,6 +1494,9 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
     if (amt <= 0) { showToast('Enter a positive amount', error: true); return; }
     setState(() => _saving = true);
     try {
+      // Best-effort GPS — never blocks recording if unavailable. Lets chit collections
+      // show up on the collection map so field officers are tracked like loan collection.
+      final location = await tryGetCurrentLocation();
       await ref.read(chitfundRepoProvider).recordPayment(widget.chitfundId, {
         'chitfundMemberId': _selectedMemberId,
         'monthNumber': _month,
@@ -1500,6 +1504,7 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
         'paymentMode': _mode,
         'reference': _refC.text.isEmpty ? null : _refC.text,
         'paidDate': formatInputDate(_paidDate),
+        if (location != null) ...location.toJson(),
       });
       showToast('Payment recorded — pending verification');
       widget.onRecorded();

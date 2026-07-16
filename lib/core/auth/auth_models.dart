@@ -57,6 +57,9 @@ class AuthOrg {
   // When a VERIFIED collection may still be edited: ALWAYS | WINDOW_24H (up to 24h
   // after verification) | NEVER.
   final String verifiedCollectionEditPolicy;
+  // Lets a field officer correct their OWN collection until it's verified. Independent of
+  // allowCollectionEdit (which governs admin edits of already-verified collections).
+  final bool allowFieldOfficerCollectionEdit;
   final String? subscriptionStatus;
   final String? renewalDate;
   final String? billingCycle;
@@ -70,6 +73,7 @@ class AuthOrg {
     this.menuOrder,
     this.allowCollectionEdit = false,
     this.verifiedCollectionEditPolicy = 'WINDOW_24H',
+    this.allowFieldOfficerCollectionEdit = true,
     this.subscriptionStatus,
     this.renewalDate,
     this.billingCycle,
@@ -94,6 +98,8 @@ class AuthOrg {
       menuOrder: menu,
       allowCollectionEdit: j['allowCollectionEdit'] == true,
       verifiedCollectionEditPolicy: j['verifiedCollectionEditPolicy']?.toString() ?? 'WINDOW_24H',
+      // Absent → enabled (backend default is true); only an explicit false disables it.
+      allowFieldOfficerCollectionEdit: j['allowFieldOfficerCollectionEdit'] != false,
       subscriptionStatus: j['subscriptionStatus']?.toString(),
       renewalDate: j['renewalDate']?.toString(),
       billingCycle: j['billingCycle']?.toString(),
@@ -109,6 +115,7 @@ class AuthOrg {
         'menuOrder': menuOrder,
         'allowCollectionEdit': allowCollectionEdit,
         'verifiedCollectionEditPolicy': verifiedCollectionEditPolicy,
+        'allowFieldOfficerCollectionEdit': allowFieldOfficerCollectionEdit,
         'subscriptionStatus': subscriptionStatus,
         'renewalDate': renewalDate,
         'billingCycle': billingCycle,
@@ -121,6 +128,7 @@ class AuthOrg {
     List<String>? menuOrder,
     bool? allowCollectionEdit,
     String? verifiedCollectionEditPolicy,
+    bool? allowFieldOfficerCollectionEdit,
   }) =>
       AuthOrg(
         id: id,
@@ -131,6 +139,7 @@ class AuthOrg {
         menuOrder: menuOrder ?? this.menuOrder,
         allowCollectionEdit: allowCollectionEdit ?? this.allowCollectionEdit,
         verifiedCollectionEditPolicy: verifiedCollectionEditPolicy ?? this.verifiedCollectionEditPolicy,
+        allowFieldOfficerCollectionEdit: allowFieldOfficerCollectionEdit ?? this.allowFieldOfficerCollectionEdit,
         subscriptionStatus: subscriptionStatus,
         renewalDate: renewalDate,
         billingCycle: billingCycle,

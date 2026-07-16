@@ -197,11 +197,12 @@ class AuthController extends Notifier<AuthState> {
 
   // Sync org-level Loan Settings into the cached session after a settings save, so
   // collection edit gating (receipt page) reflects the change without a re-login.
-  Future<void> updateOrgSettings({bool? allowCollectionEdit, String? verifiedCollectionEditPolicy}) async {
+  Future<void> updateOrgSettings({bool? allowCollectionEdit, String? verifiedCollectionEditPolicy, bool? allowFieldOfficerCollectionEdit}) async {
     if (state.org == null) return;
     final updated = state.org!.copyWith(
       allowCollectionEdit: allowCollectionEdit,
       verifiedCollectionEditPolicy: verifiedCollectionEditPolicy,
+      allowFieldOfficerCollectionEdit: allowFieldOfficerCollectionEdit,
     );
     await AccountStore.updateActiveProfile(org: updated.toJson());
     state = state.copyWith(org: updated);

@@ -116,30 +116,42 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
           final auth = ref.watch(authProvider);
           final role = auth.user?.role;
           final status = collection['verificationStatus']?.toString() ?? 'PENDING';
-          // Mirrors the backend. The org master switch must be on for any edit; a verified
-          // collection is governed by the org's verifiedCollectionEditPolicy.
-          final editingEnabled = orgSettings.containsKey('allowCollectionEdit')
-              ? orgSettings['allowCollectionEdit'] == true
-              : auth.org?.allowCollectionEdit == true;
-          final verifiedEditPolicy = orgSettings['verifiedCollectionEditPolicy']?.toString() ??
-              auth.org?.verifiedCollectionEditPolicy ??
-              'WINDOW_24H';
-          final verifiedAt = DateTime.tryParse(collection['verifiedAt']?.toString() ?? '');
-          final withinVerifiedEditWindow = verifiedAt != null &&
-              DateTime.now().difference(verifiedAt.toLocal()) <= const Duration(hours: 24);
-          final verifiedEditable = verifiedEditPolicy == 'ALWAYS' ||
-              (verifiedEditPolicy == 'WINDOW_24H' && withinVerifiedEditWindow);
-          final statusEditable =
-              status == 'PENDING' || (status == 'VERIFIED' && verifiedEditable);
-          // Editing requires the collections.edit permission.
+          // Mirrors the backend (collection.controller.js → updateCollection).
+          // Editing requires the collections.edit permission for everyone.
           final canEditCollections = auth.hasPermission('collections.edit');
-          // Field officers may only edit their own collection within 24 hours of recording it.
-          final created = DateTime.tryParse(collection['createdAt']?.toString() ?? '');
-          final withinFieldOfficerEditWindow =
-              created != null && DateTime.now().difference(created.toLocal()) <= const Duration(hours: 24);
-          final fieldOfficerOk = role != 'FIELD_OFFICER' ||
-              (collection['collectedById'] == auth.user?.id && withinFieldOfficerEditWindow);
-          final canEdit = editingEnabled && statusEditable && canEditCollections && fieldOfficerOk;
+          bool canEdit;
+          if (role == 'FIELD_OFFICER') {
+            // A field agent owns their collection only until it's verified: they may
+            // correct their OWN collection while it is still PENDING, and can no longer
+            // touch it once it's verified. Gated only by its own Loan Settings toggle
+            // (allowFieldOfficerCollectionEdit) — INDEPENDENT of allowCollectionEdit /
+            // verifiedCollectionEditPolicy, which govern ADMIN edits of verified collections.
+            // Prefer the receipt payload's fresh setting; fall back to the session copy.
+            final foEditEnabled = orgSettings.containsKey('allowFieldOfficerCollectionEdit')
+                ? orgSettings['allowFieldOfficerCollectionEdit'] != false
+                : auth.org?.allowFieldOfficerCollectionEdit != false;
+            canEdit = foEditEnabled &&
+                canEditCollections &&
+                collection['collectedById'] == auth.user?.id &&
+                status == 'PENDING';
+          } else {
+            // ORG_ADMIN / MANAGER: governed by Loan Settings. The org master switch must be
+            // on for any edit; a verified collection is subject to verifiedCollectionEditPolicy.
+            final editingEnabled = orgSettings.containsKey('allowCollectionEdit')
+                ? orgSettings['allowCollectionEdit'] == true
+                : auth.org?.allowCollectionEdit == true;
+            final verifiedEditPolicy = orgSettings['verifiedCollectionEditPolicy']?.toString() ??
+                auth.org?.verifiedCollectionEditPolicy ??
+                'WINDOW_24H';
+            final verifiedAt = DateTime.tryParse(collection['verifiedAt']?.toString() ?? '');
+            final withinVerifiedEditWindow = verifiedAt != null &&
+                DateTime.now().difference(verifiedAt.toLocal()) <= const Duration(hours: 24);
+            final verifiedEditable = verifiedEditPolicy == 'ALWAYS' ||
+                (verifiedEditPolicy == 'WINDOW_24H' && withinVerifiedEditWindow);
+            final statusEditable =
+                status == 'PENDING' || (status == 'VERIFIED' && verifiedEditable);
+            canEdit = editingEnabled && statusEditable && canEditCollections;
+          }
           final canCreate = auth.hasPermission('collections.create');
           return ListView(
             padding: const EdgeInsets.all(14),
