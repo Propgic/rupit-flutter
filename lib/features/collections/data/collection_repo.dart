@@ -65,8 +65,13 @@ class CollectionRepo {
 
   Future<void> createGroup(Map<String, dynamic> body) async => api.post('/collections/group', data: body);
 
-  Future<Map<String, dynamic>> update(String id, {required num amount, String? notes}) async {
-    final d = await api.put('/collections/$id', data: {'amount': amount, if (notes != null) 'notes': notes});
+  Future<Map<String, dynamic>> update(String id, {required num amount, num? alrAmount, bool sendAlr = false, String? notes}) async {
+    // sendAlr distinguishes "leave ALR unchanged" (omitted) from "clear it" (null).
+    final d = await api.put('/collections/$id', data: {
+      'amount': amount,
+      if (sendAlr) 'alrAmount': alrAmount,
+      if (notes != null) 'notes': notes,
+    });
     return Map<String, dynamic>.from(d as Map);
   }
 

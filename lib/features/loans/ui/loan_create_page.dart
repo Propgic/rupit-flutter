@@ -29,6 +29,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   final _rate = TextEditingController();
   final _tenure = TextEditingController();
   final _fee = TextEditingController(text: '0');
+  final _alr = TextEditingController();
   final _lateFee = TextEditingController(text: '0');
   final _notes = TextEditingController();
   // type-specific
@@ -72,7 +73,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
 
   String get _rateLabel {
     if (!_showInterestMethod) return 'Flat Interest Rate (% on principal) *';
-    if (_isPeriodUnit && _interestType == 'REDUCING') return 'Interest Rate (% per $_periodWord) *';
+    if (_isPeriodUnit && _interestType == 'REDUCING') return 'Interest Rate (% per month) *';
     if (_isPeriodUnit) return 'Flat Interest Rate (% on principal) *';
     return 'Interest Rate (% p.a.) *';
   }
@@ -173,6 +174,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       if (_interestType != 'FLAT') _deductUpfront = false;
     }
     if (g['processingFee'] != null) _fee.text = g['processingFee'].toString();
+    if (g['alr'] != null) _alr.text = g['alr'].toString();
   }
 
   // Adopt the group's assignee only if they're still an active field officer
@@ -207,7 +209,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
     final g = _group;
     if (g == null) return false;
     return g['interestRate'] != null || g['tenure'] != null || g['emiFrequency'] != null ||
-        g['interestType'] != null || g['processingFee'] != null;
+        g['interestType'] != null || g['processingFee'] != null || g['alr'] != null;
   }
 
   String get _groupDefaultsSummary {
@@ -224,6 +226,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
             : 'reducing balance',
       if (g['processingFee'] != null && (double.tryParse(g['processingFee'].toString()) ?? 0) > 0)
         "₹${g['processingFee']} processing fee",
+      if (g['alr'] != null && (double.tryParse(g['alr'].toString()) ?? 0) > 0)
+        "ALR ${g['alr']}",
     ];
     return parts.join(' · ');
   }
@@ -262,6 +266,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       if (_showInterestMethod) 'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
       'startDate': formatInputDate(_startDate),
       'processingFee': double.tryParse(_fee.text) ?? 0,
+      'alr': _alr.text.trim().isEmpty ? null : double.tryParse(_alr.text.trim()),
       'lateFeePerDay': double.tryParse(_lateFee.text) ?? 0,
       if (_notes.text.trim().isNotEmpty) 'notes': _notes.text.trim(),
     };
@@ -461,7 +466,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                         padding: const EdgeInsets.only(top: 6),
                         child: Text(
                           'Interest is charged on the outstanding balance each $_periodWord; '
-                          'the rate is applied per $_periodWord (not annualized).',
+                          'the rate is per month and is converted to a ${_tenureType == 'WEEKS' ? 'weekly' : 'daily'} charge automatically.',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
@@ -492,7 +497,27 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                       if (d != null) setState(() => _startDate = d);
                     },
                   ),
-                  TextFormField(controller: _fee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Processing Fee')),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(controller: _fee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Processing Fee')),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _alr,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'ALR'),
+                          validator: (v) {
+                            final t = v?.trim() ?? '';
+                            if (t.isEmpty) return null;
+                            final n = double.tryParse(t);
+                            return n == null || n < 0 ? 'Invalid value' : null;
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 10),
                   TextFormField(controller: _lateFee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Late Fee Per Day')),
                 ],

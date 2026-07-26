@@ -66,6 +66,7 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
   bool _loadingPayments = false;
   final _searchCtrl = TextEditingController();
   final _amountCtrl = TextEditingController();
+  final _alrCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
   String _mode = 'CASH';
   bool _saving = false;
@@ -97,6 +98,7 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
     _searchCtrl.dispose();
     _chitSearchCtrl.dispose();
     _amountCtrl.dispose();
+    _alrCtrl.dispose();
     _notesCtrl.dispose();
     super.dispose();
   }
@@ -249,6 +251,9 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
       _selectedLoan = loan;
       _searchCtrl.text = '';
       _loanPayments = [];
+      // Prefill ALR from the loan's ALR; stays editable and is tracked separately.
+      final alr = double.tryParse(loan['alr']?.toString() ?? '');
+      _alrCtrl.text = alr != null && alr > 0 ? loan['alr'].toString() : '';
     });
     _loadEmis(loan['id'].toString());
     _loadLoanPayments(loan['id'].toString());
@@ -258,6 +263,10 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
     if (_selectedLoan == null) return showToast('Select a loan', error: true);
     final amount = double.tryParse(_amountCtrl.text);
     if (amount == null || amount <= 0) return showToast('Enter valid amount', error: true);
+    final alr = double.tryParse(_alrCtrl.text.trim());
+    if (_alrCtrl.text.trim().isNotEmpty && (alr == null || alr < 0)) {
+      return showToast('Enter valid ALR', error: true);
+    }
     setState(() => _saving = true);
     try {
       // Best-effort GPS — never blocks recording if unavailable.
@@ -265,6 +274,7 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
       final res = await ref.read(collectionRepoProvider).create({
         'loanId': _selectedLoan!['id'],
         'amount': amount,
+        if (alr != null && alr > 0) 'alrAmount': alr,
         'paymentMode': _mode,
         if (_notesCtrl.text.trim().isNotEmpty) 'notes': _notesCtrl.text.trim(),
         if (location != null) ...location.toJson(),
@@ -434,11 +444,33 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
               title: 'Payment',
               child: Column(
                 children: [
-                  TextField(
-                    controller: _amountCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Amount *', prefixText: '₹ '),
-                  ),
+                  // ALR is only collectable when the loan was created with an ALR.
+                  if ((double.tryParse(_selectedLoan?['alr']?.toString() ?? '') ?? 0) > 0)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _amountCtrl,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'Amount *', prefixText: '₹ '),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: _alrCtrl,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'ALR'),
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    TextField(
+                      controller: _amountCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'Amount *', prefixText: '₹ '),
+                    ),
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                     initialValue: _mode,

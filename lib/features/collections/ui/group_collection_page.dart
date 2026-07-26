@@ -17,6 +17,7 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
   Map<String, dynamic>? _group;
   List<Map<String, dynamic>> _loans = [];
   final Map<String, TextEditingController> _amounts = {};
+  final Map<String, TextEditingController> _alrs = {};
   String _mode = 'CASH';
   final _reference = TextEditingController();
   bool _loading = false;
@@ -35,8 +36,12 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
         setState(() {
           _loans = list.map((e) => Map<String, dynamic>.from(e as Map)).where((l) => l['status'] == 'ACTIVE').toList();
           _amounts.clear();
+          _alrs.clear();
           for (final l in _loans) {
             _amounts[l['id'].toString()] = TextEditingController();
+            // ALR prefills from the loan's ALR; tracked separately from the amount.
+            final alr = double.tryParse(l['alr']?.toString() ?? '');
+            _alrs[l['id'].toString()] = TextEditingController(text: alr != null && alr > 0 ? l['alr'].toString() : '');
           }
         });
       } finally {
@@ -51,7 +56,12 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
     for (final l in _loans) {
       final amt = double.tryParse(_amounts[l['id'].toString()]?.text ?? '');
       if (amt != null && amt > 0) {
-        collections.add({'loanId': l['id'], 'amount': amt});
+        final alr = double.tryParse(_alrs[l['id'].toString()]?.text ?? '');
+        collections.add({
+          'loanId': l['id'],
+          'amount': amt,
+          if (alr != null && alr > 0) 'alrAmount': alr,
+        });
       }
     }
     if (collections.isEmpty) return showToast('Enter at least one amount', error: true);
@@ -73,6 +83,9 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
       if (mounted) {
         setState(() {
           for (final c in _amounts.values) {
+            c.clear();
+          }
+          for (final c in _alrs.values) {
             c.clear();
           }
           _reference.clear();
@@ -153,6 +166,18 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
                             decoration: const InputDecoration(prefixText: '₹ ', isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
                           ),
                         ),
+                        // ALR is only collectable when the loan was created with an ALR.
+                        if ((double.tryParse(l['alr']?.toString() ?? '') ?? 0) > 0) ...[
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 80,
+                            child: TextField(
+                              controller: _alrs[l['id'].toString()],
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              decoration: const InputDecoration(labelText: 'ALR', isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   );

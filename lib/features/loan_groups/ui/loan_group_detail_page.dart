@@ -95,7 +95,8 @@ class LoanGroupDetailPage extends ConsumerWidget {
               ),
             ),
             if (g['assignedTo'] != null || g['interestRate'] != null || g['tenure'] != null ||
-                g['emiFrequency'] != null || g['interestType'] != null || g['processingFee'] != null)
+                g['emiFrequency'] != null || g['interestType'] != null || g['processingFee'] != null ||
+                g['alr'] != null)
               SectionCard(
                 title: 'Loan Terms',
                 child: Column(
@@ -120,6 +121,8 @@ class LoanGroupDetailPage extends ConsumerWidget {
                       ),
                     if (g['processingFee'] != null && (double.tryParse(g['processingFee'].toString()) ?? 0) > 0)
                       KeyValueRow(label: 'Processing Fee', value: formatCurrency(g['processingFee'])),
+                    if (g['alr'] != null && (double.tryParse(g['alr'].toString()) ?? 0) > 0)
+                      KeyValueRow(label: 'ALR', value: _trimNum(g['alr'])),
                   ],
                 ),
               ),

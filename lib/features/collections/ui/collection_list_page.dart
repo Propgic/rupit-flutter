@@ -387,6 +387,8 @@ class _CollectionListPageState extends ConsumerState<CollectionListPage> {
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Text(formatCurrency(c['amount']), style: const TextStyle(fontWeight: FontWeight.w600)),
+                                if ((double.tryParse(c['alrAmount']?.toString() ?? '') ?? 0) > 0)
+                                  Text('+ ALR ${formatCurrency(c['alrAmount'])}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
                                 StatusChip(label: c['verificationStatus']?.toString() ?? '', color: statusColor(c['verificationStatus']?.toString())),
                               ],
                             ),

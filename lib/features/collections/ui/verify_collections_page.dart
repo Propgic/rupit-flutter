@@ -275,7 +275,14 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text(formatCurrency(c['amount']), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(formatCurrency(c['amount']), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                    if ((double.tryParse(c['alrAmount']?.toString() ?? '') ?? 0) > 0)
+                      Text('+ ALR ${formatCurrency(c['alrAmount'])}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                  ],
+                ),
               ],
             ),
             const SizedBox(height: 6),

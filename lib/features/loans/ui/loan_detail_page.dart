@@ -297,6 +297,8 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                 KeyValueRow(label: 'Total Payable', value: formatCurrency(l['totalPayable'])),
               if (!loanFieldHidden(l, 'processingFee'))
                 KeyValueRow(label: 'Processing Fee', value: formatCurrency(l['processingFee'])),
+              if (l['alr'] != null && (double.tryParse(l['alr'].toString()) ?? 0) > 0)
+                KeyValueRow(label: 'ALR', value: l['alr'].toString()),
               KeyValueRow(label: 'Start Date', value: formatDate(l['startDate'])),
               KeyValueRow(label: 'Disbursed', value: formatDate(l['disbursedDate'])),
               KeyValueRow(label: 'End Date', value: formatDate(l['endDate'])),
@@ -836,7 +838,7 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
 
   String get _rateLabel {
     if (_isInstallment) return 'Flat Interest Rate (% on principal)';
-    if (_isPeriodUnit && _interestType == 'REDUCING') return 'Interest Rate (% per $_periodWord)';
+    if (_isPeriodUnit && _interestType == 'REDUCING') return 'Interest Rate (% per month)';
     if (_isPeriodUnit) return 'Flat Interest Rate (% on principal)';
     return 'Interest Rate (% p.a.)';
   }
@@ -995,7 +997,7 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(
                     'Interest is charged on the outstanding balance each $_periodWord; '
-                    'the rate is applied per $_periodWord (not annualized).',
+                    'the rate is per month and is converted to a ${_tenureType == 'WEEKS' ? 'weekly' : 'daily'} charge automatically.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),

@@ -81,14 +81,16 @@ LoanPreview computeLoanPreview({
     final unit = tenureType == 'WEEKS' ? 'week' : 'day';
     final instLabel = tenureType == 'WEEKS' ? 'Weekly Installment' : 'Daily Installment';
     if (interestType == 'REDUCING') {
-      final r = rate / 100; // per-period rate
+      // Monthly rate → per-installment rate (× 12 / 52 per week, × 12 / 365 per day),
+      // applied to the outstanding balance — mirrors the backend's periodReducingRate.
+      final r = (rate / 100) * 12 / (tenureType == 'WEEKS' ? 52 : 365);
       final emi = _r2(r == 0 ? amount / n : (amount * r * pow(1 + r, n)) / (pow(1 + r, n) - 1));
       final totalPayable = _r2(emi * n);
       return LoanPreview(
         principal: amount, totalInterest: _r2(totalPayable - amount), processingFee: processingFee,
         netDisbursed: _r2(amount - processingFee), totalPayable: totalPayable, emiAmount: emi,
         tenure: tenure, unitWord: unit, upfront: false, upfrontInterest: 0,
-        rateSuffix: ' / $unit (reducing)', installmentLabel: instLabel,
+        rateSuffix: ' / month (reducing)', installmentLabel: instLabel,
       );
     }
     final totalInterest = _r2(amount * rate / 100);
@@ -223,6 +225,9 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
                   label: p.upfront ? 'Upfront Interest (deducted)' : 'Total Interest',
                   value: formatCurrency(p.totalInterest),
                 ),
+                // ALR rides along informationally — it is not part of the disbursement math.
+                if ((double.tryParse(widget.body['alr']?.toString() ?? '') ?? 0) > 0)
+                  KeyValueRow(label: 'ALR', value: widget.body['alr'].toString()),
               ],
             ),
           ),

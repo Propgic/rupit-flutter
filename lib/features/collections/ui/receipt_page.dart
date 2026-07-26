@@ -26,7 +26,12 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
 
   Future<void> _editAmount(Map<String, dynamic> collection) async {
     final amountCtrl = TextEditingController(text: (collection['amount'] ?? '').toString());
+    final alrCtrl = TextEditingController(text: (collection['alrAmount'] ?? '').toString());
     final notesCtrl = TextEditingController(text: collection['notes']?.toString() ?? '');
+    // ALR is only editable when the loan was created with an ALR (or the collection
+    // already carries one that may need correcting).
+    final showAlr = (double.tryParse((collection['loan'] as Map?)?['alr']?.toString() ?? '') ?? 0) > 0 ||
+        (double.tryParse(collection['alrAmount']?.toString() ?? '') ?? 0) > 0;
     final saved = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -39,6 +44,14 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(labelText: 'Amount', prefixText: '₹ '),
             ),
+            if (showAlr) ...[
+              const SizedBox(height: 10),
+              TextField(
+                controller: alrCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'ALR'),
+              ),
+            ],
             const SizedBox(height: 10),
             TextField(
               controller: notesCtrl,
@@ -57,6 +70,9 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
     if (raw.isEmpty) return showToast('Enter an amount', error: true);
     final amount = double.tryParse(raw);
     if (amount == null || amount < 0) return showToast('Enter a valid amount', error: true);
+    final alrRaw = alrCtrl.text.trim();
+    final alr = double.tryParse(alrRaw);
+    if (alrRaw.isNotEmpty && (alr == null || alr < 0)) return showToast('Enter a valid ALR', error: true);
     // Amount 0 removes the collection entirely — confirm before the destructive action.
     if (amount == 0) {
       if (!mounted) return;
@@ -73,6 +89,9 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
       final result = await ref.read(collectionRepoProvider).update(
             widget.id,
             amount: amount,
+            alrAmount: alrRaw.isEmpty ? null : alr,
+            // Only touch ALR when the field was shown; otherwise leave it unchanged.
+            sendAlr: showAlr,
             notes: notesCtrl.text.trim().isEmpty ? null : notesCtrl.text.trim(),
           );
       if (result['deleted'] == true) {
@@ -197,6 +216,8 @@ class _ReceiptPageState extends ConsumerState<ReceiptPage> {
                           style: const TextStyle(fontSize: 14, color: AppColors.textSecondary)),
                       const SizedBox(height: 14),
                       Text(formatCurrency(collection['amount']), style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800, color: AppColors.primary)),
+                      if ((double.tryParse(collection['alrAmount']?.toString() ?? '') ?? 0) > 0)
+                        Text('+ ALR ${formatCurrency(collection['alrAmount'])}', style: const TextStyle(fontSize: 13)),
                     ],
                   ),
                 ),

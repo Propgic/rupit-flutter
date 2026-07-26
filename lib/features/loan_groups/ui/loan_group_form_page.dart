@@ -41,6 +41,7 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
   final _interestRate = TextEditingController();
   final _tenure = TextEditingController();
   final _processingFee = TextEditingController();
+  final _alr = TextEditingController();
   String _emiFrequency = 'WEEKLY';
   String _interestType = 'FLAT';
   bool _deductUpfront = false;
@@ -88,6 +89,7 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
       _interestRate.text = g['interestRate']?.toString() ?? '';
       _tenure.text = g['tenure']?.toString() ?? '';
       _processingFee.text = g['processingFee']?.toString() ?? '';
+      _alr.text = g['alr']?.toString() ?? '';
       _emiFrequency = _tenureLabels.containsKey(g['emiFrequency']) ? g['emiFrequency'] as String : 'WEEKLY';
       _interestType = g['interestType'] == 'REDUCING' ? 'REDUCING' : 'FLAT';
       _deductUpfront = g['deductInterestUpfront'] == true;
@@ -122,6 +124,7 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
         // Upfront deduction only applies to flat-rate interest (same rule as loans).
         'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
         'processingFee': _processingFee.text.trim().isEmpty ? null : double.tryParse(_processingFee.text.trim()),
+        'alr': _alr.text.trim().isEmpty ? null : double.tryParse(_alr.text.trim()),
         'assignedToId': _assignedToId,
       };
       final repo = ref.read(loanGroupRepoProvider);
@@ -268,16 +271,36 @@ class _LoanGroupFormPageState extends ConsumerState<LoanGroupFormPage> {
                       onChanged: (v) => setState(() => _deductUpfront = v),
                     ),
                   const SizedBox(height: 10),
-                  TextFormField(
-                    controller: _processingFee,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Processing Fee', prefixText: '₹ '),
-                    validator: (v) {
-                      final t = v?.trim() ?? '';
-                      if (t.isEmpty) return null;
-                      final n = double.tryParse(t);
-                      return n == null || n < 0 ? 'Invalid amount' : null;
-                    },
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _processingFee,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(labelText: 'Processing Fee', prefixText: '₹ '),
+                          validator: (v) {
+                            final t = v?.trim() ?? '';
+                            if (t.isEmpty) return null;
+                            final n = double.tryParse(t);
+                            return n == null || n < 0 ? 'Invalid amount' : null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _alr,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'ALR'),
+                          validator: (v) {
+                            final t = v?.trim() ?? '';
+                            if (t.isEmpty) return null;
+                            final n = double.tryParse(t);
+                            return n == null || n < 0 ? 'Invalid value' : null;
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
