@@ -410,7 +410,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                   const SizedBox(height: 10),
                   TextFormField(
                     controller: _rate,
-                    keyboardType: TextInputType.number,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: InputDecoration(labelText: _rateLabel),
                     validator: (v) => double.tryParse(v ?? '') != null ? null : 'Required',
                   ),
