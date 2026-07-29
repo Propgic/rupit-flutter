@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/api_client.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/utils/location.dart';
 import '../../../core/widgets/common.dart';
@@ -15,6 +16,8 @@ class GroupCollectionPage extends ConsumerStatefulWidget {
 
 class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
   Map<String, dynamic>? _group;
+  List<Map<String, dynamic>> _groups = [];
+  bool _groupsLoading = false;
   List<Map<String, dynamic>> _loans = [];
   final Map<String, TextEditingController> _amounts = {};
   final Map<String, TextEditingController> _alrs = {};
@@ -23,30 +26,96 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
   bool _loading = false;
   bool _saving = false;
 
+  static const _weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGroups();
+  }
+
+  Future<void> _loadGroups() async {
+    setState(() => _groupsLoading = true);
+    try {
+      final r = await ref.read(loanGroupRepoProvider).list(limit: 500);
+      final all = ((r['data'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      // Only groups collectible today: meeting day matches, or no fixed meeting
+      // day (those are collectible any day) — same rule as the web app.
+      final today = _weekdays[DateTime.now().weekday - 1];
+      if (!mounted) return;
+      setState(() {
+        _groups = all.where((g) {
+          final day = g['meetingDay']?.toString() ?? '';
+          return day.isEmpty || day == today;
+        }).toList();
+        // Refresh the selected group so its status chip reflects the latest counts.
+        if (_group != null) {
+          _group = _groups.firstWhere(
+            (g) => g['id'].toString() == _group!['id'].toString(),
+            orElse: () => _group!,
+          );
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _groupsLoading = false);
+    }
+  }
+
+  // Today's collection status for the picker, from the per-group counts the
+  // /loan-groups list returns (active loans vs. those collected today).
+  StatusChip _groupStatusChip(Map<String, dynamic> g) {
+    final active = int.tryParse(g['activeLoans']?.toString() ?? '') ?? 0;
+    final collected = int.tryParse(g['todayCollectedLoans']?.toString() ?? '') ?? 0;
+    if (active == 0) return const StatusChip(label: 'No loans', color: AppColors.textSecondary);
+    if (collected >= active) return const StatusChip(label: 'Fully collected', color: AppColors.accent);
+    if (collected > 0) return const StatusChip(label: 'Partially collected', color: AppColors.warning);
+    return const StatusChip(label: 'Pending', color: AppColors.danger);
+  }
+
   Future<void> _pickGroup() async {
-    final picked = await showModalBottomSheet<Map<String, dynamic>>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _GroupPicker(ref: ref),
+    if (_groups.isEmpty) return showToast('No groups due for collection today', error: true);
+    final picked = await showSearchableSelect<String>(
+      context,
+      title: 'Select Group',
+      searchHint: 'Search by name, number or leader',
+      selected: _group?['id']?.toString(),
+      options: _groups
+          .map((g) => SelectOption<String>(
+                value: g['id'].toString(),
+                label: '${g['name']} (${g['groupNumber']})',
+                searchText: '${g['name']} ${g['groupNumber']} ${g['leaderName'] ?? ''}',
+                trailing: _groupStatusChip(g),
+              ))
+          .toList(),
     );
     if (picked != null) {
-      setState(() { _group = picked; _loading = true; _loans = []; });
-      try {
-        final list = await ref.read(loanGroupRepoProvider).loans(picked['id'].toString());
-        setState(() {
-          _loans = list.map((e) => Map<String, dynamic>.from(e as Map)).where((l) => l['status'] == 'ACTIVE').toList();
-          _amounts.clear();
-          _alrs.clear();
-          for (final l in _loans) {
-            _amounts[l['id'].toString()] = TextEditingController();
-            // ALR prefills from the loan's ALR; tracked separately from the amount.
-            final alr = double.tryParse(l['alr']?.toString() ?? '');
-            _alrs[l['id'].toString()] = TextEditingController(text: alr != null && alr > 0 ? l['alr'].toString() : '');
-          }
-        });
-      } finally {
-        if (mounted) setState(() => _loading = false);
-      }
+      setState(() {
+        _group = _groups.firstWhere((g) => g['id'].toString() == picked);
+        _loans = [];
+      });
+      await _loadLoans();
+    }
+  }
+
+  Future<void> _loadLoans() async {
+    if (_group == null) return;
+    setState(() => _loading = true);
+    try {
+      final list = await ref.read(loanGroupRepoProvider).loans(_group!['id'].toString());
+      if (!mounted) return;
+      setState(() {
+        _loans = list.map((e) => Map<String, dynamic>.from(e as Map)).where((l) => l['status'] == 'ACTIVE').toList();
+        _amounts.clear();
+        _alrs.clear();
+        for (final l in _loans) {
+          _amounts[l['id'].toString()] = TextEditingController();
+          // ALR prefills from the loan's ALR; tracked separately from the amount.
+          final alr = double.tryParse(l['alr']?.toString() ?? '');
+          _alrs[l['id'].toString()] = TextEditingController(text: alr != null && alr > 0 ? l['alr'].toString() : '');
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -54,6 +123,9 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
     if (_group == null) return showToast('Select a group', error: true);
     final collections = <Map<String, dynamic>>[];
     for (final l in _loans) {
+      // Already collected today — the row renders as collected with no input,
+      // and must never be re-submitted (the API rejects the whole batch).
+      if (l['todayCollection'] != null) continue;
       final amt = double.tryParse(_amounts[l['id'].toString()]?.text ?? '');
       if (amt != null && amt > 0) {
         final alr = double.tryParse(_alrs[l['id'].toString()]?.text ?? '');
@@ -78,18 +150,14 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
       });
       showToast('Group collection recorded');
       // Stay on the group collection page so the agent can keep working with the
-      // same group — clear the entered amounts (and reference) so the just-posted
-      // figures can't be re-submitted by accident.
+      // same group — re-fetch the loans so the just-posted members flip to their
+      // "Collected" state (which also recreates the inputs empty, so the posted
+      // figures can't be re-submitted by accident).
       if (mounted) {
-        setState(() {
-          for (final c in _amounts.values) {
-            c.clear();
-          }
-          for (final c in _alrs.values) {
-            c.clear();
-          }
-          _reference.clear();
-        });
+        _reference.clear();
+        await _loadLoans();
+        // Refresh group counts so the status chip flips (e.g. Pending → Fully collected).
+        await _loadGroups();
       }
     } on ApiException catch (e) {
       showToast(e.message, error: true);
@@ -100,6 +168,8 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
 
   @override
   Widget build(BuildContext context) {
+    final collectedCount = _loans.where((l) => l['todayCollection'] != null).length;
+    final allCollected = _loans.isNotEmpty && collectedCount == _loans.length;
     return Scaffold(
       appBar: AppBar(title: const Text('Group Collection')),
       body: ListView(
@@ -110,9 +180,20 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
             child: ListTile(
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.groups),
-              title: Text(_group == null ? 'Select Group *' : _group!['name']?.toString() ?? ''),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _pickGroup,
+              title: Text(_group == null
+                  ? (_groupsLoading ? 'Loading groups...' : 'Select Group *')
+                  : _group!['name']?.toString() ?? ''),
+              trailing: _group == null
+                  ? const Icon(Icons.chevron_right)
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _groupStatusChip(_group!),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.chevron_right),
+                      ],
+                    ),
+              onTap: _groupsLoading ? null : _pickGroup,
             ),
           ),
           SectionCard(
@@ -142,49 +223,78 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
             SectionCard(
               title: 'Members',
               child: Column(
-                children: _loans.map((l) {
-                  final c = Map<String, dynamic>.from(l['customer'] ?? {});
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim(), style: const TextStyle(fontWeight: FontWeight.w500)),
-                              Text('${l['loanNumber']} • EMI ${formatCurrency(l['emiAmount'])}', style: const TextStyle(fontSize: 12)),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        SizedBox(
-                          width: 110,
-                          child: TextField(
-                            controller: _amounts[l['id'].toString()],
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(prefixText: '₹ ', isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
-                          ),
-                        ),
-                        // ALR is only collectable when the loan was created with an ALR.
-                        if ((double.tryParse(l['alr']?.toString() ?? '') ?? 0) > 0) ...[
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 80,
-                            child: TextField(
-                              controller: _alrs[l['id'].toString()],
-                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              decoration: const InputDecoration(labelText: 'ALR', isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
+                children: [
+                  if (collectedCount > 0)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        allCollected
+                            ? 'Group collection already recorded today.'
+                            : '$collectedCount of ${_loans.length} members already collected today — submitting records only the rest.',
+                        style: const TextStyle(fontSize: 12, color: AppColors.accent, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ..._loans.map((l) {
+                    final c = Map<String, dynamic>.from(l['customer'] ?? {});
+                    final today = l['todayCollection'] is Map ? Map<String, dynamic>.from(l['todayCollection'] as Map) : null;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim(), style: const TextStyle(fontWeight: FontWeight.w500)),
+                                Text('${l['loanNumber']} • EMI ${formatCurrency(l['emiAmount'])}', style: const TextStyle(fontSize: 12)),
+                              ],
                             ),
                           ),
+                          const SizedBox(width: 10),
+                          if (today != null)
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(formatCurrency(today['amount']), style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.accent)),
+                                Text('Collected • ${today['receiptNumber'] ?? ''}', style: const TextStyle(fontSize: 11, color: AppColors.accent)),
+                              ],
+                            )
+                          else ...[
+                            SizedBox(
+                              width: 110,
+                              child: TextField(
+                                controller: _amounts[l['id'].toString()],
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(prefixText: '₹ ', isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
+                              ),
+                            ),
+                            // ALR is only collectable when the loan was created with an ALR.
+                            if ((double.tryParse(l['alr']?.toString() ?? '') ?? 0) > 0) ...[
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                width: 80,
+                                child: TextField(
+                                  controller: _alrs[l['id'].toString()],
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: const InputDecoration(labelText: 'ALR', isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
+                                ),
+                              ),
+                            ],
+                          ],
                         ],
-                      ],
-                    ),
-                  );
-                }).toList(),
+                      ),
+                    );
+                  }),
+                ],
               ),
             ),
-          if (_loans.isNotEmpty)
+          if (_loans.isNotEmpty && !allCollected)
             SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _saving ? null : _submit, child: Text(_saving ? 'Saving...' : 'Submit Group Collection'))),
         ],
       ),
@@ -192,50 +302,3 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
   }
 }
 
-class _GroupPicker extends StatefulWidget {
-  final WidgetRef ref;
-  const _GroupPicker({required this.ref});
-  @override
-  State<_GroupPicker> createState() => _GroupPickerState();
-}
-
-class _GroupPickerState extends State<_GroupPicker> {
-  List<Map<String, dynamic>> _items = [];
-  bool _loading = false;
-
-  @override
-  void initState() { super.initState(); _load(); }
-
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    try {
-      final r = await widget.ref.read(loanGroupRepoProvider).list(limit: 50);
-      setState(() => _items = ((r['data'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList());
-    } finally { if (mounted) setState(() => _loading = false); }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return DraggableScrollableSheet(
-      initialChildSize: 0.7,
-      expand: false,
-      builder: (_, ctrl) => Column(
-        children: [
-          Padding(padding: const EdgeInsets.all(12), child: Row(children: [const Expanded(child: Text('Select Group', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600))), IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context))])),
-          Expanded(
-            child: _loading
-                ? const LoadingView()
-                : ListView.builder(
-                    controller: ctrl,
-                    itemCount: _items.length,
-                    itemBuilder: (ctx, i) {
-                      final g = _items[i];
-                      return ListTile(title: Text(g['name']?.toString() ?? ''), subtitle: Text(g['leaderName']?.toString() ?? ''), onTap: () => Navigator.pop(context, g));
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}

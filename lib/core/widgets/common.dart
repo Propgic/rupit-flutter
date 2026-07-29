@@ -276,11 +276,13 @@ class _ImageViewerPage extends StatelessWidget {
 // One selectable row in [showSearchableSelect]. [label] is what's shown; [searchText]
 // is what the search box matches against (defaults to the label when omitted, so pass
 // the raw name/number here when the label carries extra formatting like "— ₹x due").
+// [trailing] renders on the right of the row (e.g. a StatusChip) before the check mark.
 class SelectOption<T> {
   final T value;
   final String label;
   final String searchText;
-  SelectOption({required this.value, required this.label, String? searchText})
+  final Widget? trailing;
+  SelectOption({required this.value, required this.label, String? searchText, this.trailing})
       : searchText = (searchText ?? label).toLowerCase();
 }
 
@@ -374,8 +376,19 @@ class _SearchableSelectSheetState<T> extends State<_SearchableSelectSheet<T>> {
                         final o = filtered[i];
                         final isSel = o.value == widget.selected;
                         return ListTile(
-                          title: Text(o.label),
-                          trailing: isSel ? const Icon(Icons.check, color: AppColors.primary) : null,
+                          title: Text(o.label, overflow: TextOverflow.ellipsis),
+                          trailing: (o.trailing == null && !isSel)
+                              ? null
+                              : Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (o.trailing != null) o.trailing!,
+                                    if (isSel) ...[
+                                      const SizedBox(width: 6),
+                                      const Icon(Icons.check, color: AppColors.primary),
+                                    ],
+                                  ],
+                                ),
                           selected: isSel,
                           onTap: () => Navigator.pop(context, o.value),
                         );

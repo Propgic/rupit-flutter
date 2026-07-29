@@ -206,6 +206,7 @@ class _GroupCollectionReportPageState extends ConsumerState<GroupCollectionRepor
             MapEntry('EMI Due', formatCurrency(summary['totalEmiDue'])),
             MapEntry(isFiltered ? scopedLabel : 'Total Collected', formatCurrency(isFiltered ? summary['periodCollected'] : summary['totalCollected'])),
             MapEntry('Total Collected', formatCurrency(summary['totalCollected'])),
+            MapEntry('Pending Collection', formatCurrency(summary['totalPendingDue'])),
             MapEntry('Outstanding', formatCurrency(summary['totalOutstanding'])),
           ]),
           const SizedBox(height: 8),
@@ -232,10 +233,12 @@ class _GroupCollectionReportPageState extends ConsumerState<GroupCollectionRepor
 
   Widget _memberTile(Map<String, dynamic> m, bool showGroup, String scopedLabel, bool isFiltered) {
     final outstanding = toNum(m['outstanding']);
+    final pendingDue = toNum(m['pendingDue']);
     final sub = <String>[
       m['loanNumber']?.toString() ?? '',
       if (showGroup && m['groupName'] != null) m['groupName'].toString(),
       'EMI ${formatCurrency(m['emiAmount'])}',
+      if (pendingDue > 0) 'Pending ${formatCurrency(pendingDue)}',
       if (m['lastPaymentDate'] != null) 'Last: ${m['lastPaymentDate']}',
     ];
     return Card(
