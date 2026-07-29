@@ -40,7 +40,11 @@ const _loanTypeLabels = {
 };
 
 class CollectionFormPage extends ConsumerStatefulWidget {
-  const CollectionFormPage({super.key});
+  /// Loan to open with already selected — set when the form is reached from a
+  /// loan's "Collect Payment" CTA (`/collections/new?loanId=…`), mirroring the web.
+  /// The collector can still switch loans via "Change" on the selected-loan card.
+  final String? loanId;
+  const CollectionFormPage({super.key, this.loanId});
   @override
   ConsumerState<CollectionFormPage> createState() => _CollectionFormPageState();
 }
@@ -84,9 +88,13 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
     super.initState();
     final features = ref.read(authProvider).org?.features ?? const {};
     // Chit-only orgs open straight into chit collection; loan-enabled orgs default to loans.
-    _source = (features['enableChitfund'] == true && features['enableLoans'] != true) ? 'CHITFUND' : 'LOAN';
+    // Arriving with a loan in hand always means a loan collection.
+    _source = (widget.loanId == null && features['enableChitfund'] == true && features['enableLoans'] != true)
+        ? 'CHITFUND'
+        : 'LOAN';
     _loadAssignees();
     if (_source == 'CHITFUND') { _loadChits(); } else { _loadLoans(); }
+    if (widget.loanId != null) _preselectLoan(widget.loanId!);
     // Load the next page when the list is scrolled near the bottom.
     _loanScrollCtrl.addListener(_onLoanScroll);
   }
@@ -243,6 +251,20 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
       if (mounted) setState(() => _loanPayments = []);
     } finally {
       if (mounted) setState(() => _loadingPayments = false);
+    }
+  }
+
+  // Open with the loan the collector tapped "Collect Payment" on. Fetched by id rather
+  // than picked from _loans because the list is paged/filtered and may not hold it.
+  Future<void> _preselectLoan(String loanId) async {
+    try {
+      final loan = await ref.read(loanRepoProvider).get(loanId);
+      if (!mounted) return;
+      _selectLoan(loan);
+    } on ApiException catch (e) {
+      if (mounted) showToast(e.message, error: true);
+    } catch (_) {
+      if (mounted) showToast('Could not load that loan — pick it from the list', error: true);
     }
   }
 

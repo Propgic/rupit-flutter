@@ -115,7 +115,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(path: '/loan-groups/:id/edit', builder: (_, s) => LoanGroupFormPage(id: s.pathParameters['id'])),
 
           GoRoute(path: '/collections', builder: (_, __) => const CollectionListPage()),
-          GoRoute(path: '/collections/new', builder: (_, __) => const CollectionFormPage()),
+          GoRoute(path: '/collections/new', builder: (_, s) => CollectionFormPage(loanId: s.uri.queryParameters['loanId'])),
           GoRoute(path: '/collections/summary', builder: (_, __) => const DailySummaryPage()),
           GoRoute(path: '/collections/verify', builder: (_, s) => VerifyCollectionsPage(collectedById: s.uri.queryParameters['collectedById'], collectorName: s.uri.queryParameters['name'])),
           GoRoute(path: '/collections/group', builder: (_, __) => const GroupCollectionPage()),

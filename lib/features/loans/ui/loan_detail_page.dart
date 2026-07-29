@@ -31,6 +31,15 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
     super.dispose();
   }
 
+  /// Whether the "Collect Payment" CTA shows for this loan — active loans only,
+  /// for users who may record collections (mirrors the web detail page's button).
+  bool _canCollect(Map<String, dynamic> l) =>
+      l['status'] == 'ACTIVE' && ref.read(authProvider).hasPermission('collections.create');
+
+  /// Room at the bottom of a scrolling tab so the extended FAB never covers the last row.
+  EdgeInsets _tabPadding(Map<String, dynamic> l, double base) =>
+      EdgeInsets.fromLTRB(base, base, base, _canCollect(l) ? base + 76 : base);
+
   Future<void> _doAction(Future<void> Function() fn, String msg) async {
     try {
       await fn();
@@ -102,6 +111,23 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
           ),
         ],
       ),
+      // Primary CTA for an active loan — same entry point as the web detail page's
+      // "Collect Payment", opening the collection form with this loan preselected.
+      floatingActionButton: data.maybeWhen(
+        data: (l) => _canCollect(l)
+            ? FloatingActionButton.extended(
+                onPressed: () async {
+                  await context.push('/collections/new?loanId=${widget.id}');
+                  if (!mounted) return;
+                  // A payment recorded from here changes the balance/EMI schedule.
+                  ref.invalidate(loanDetailProvider(widget.id));
+                },
+                icon: const Icon(Icons.payments_outlined),
+                label: const Text('Collect Payment'),
+              )
+            : null,
+        orElse: () => null,
+      ),
       body: data.when(
         loading: () => const LoadingView(),
         error: (e, _) => ErrorView(message: e.toString(), onRetry: () => ref.invalidate(loanDetailProvider(widget.id))),
@@ -156,7 +182,7 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
     ));
 
     return ListView(
-      padding: const EdgeInsets.all(14),
+      padding: _tabPadding(l, 14),
       children: [
         if (l['archivedAt'] != null)
           Container(
@@ -661,7 +687,7 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
       return const EmptyView(message: 'No collections yet', icon: Icons.receipt_long_outlined);
     }
     return ListView.builder(
-      padding: const EdgeInsets.all(12),
+      padding: _tabPadding(l, 12),
       itemCount: cols.length,
       itemBuilder: (ctx, i) {
         final cm = Map<String, dynamic>.from(cols[i] as Map);
@@ -717,6 +743,7 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
     if (items.isEmpty) return const EmptyView(message: 'No EMI schedule');
     final showInterest = !loanFieldHidden(l, 'totalInterest');
     return ListView.builder(
+      padding: _tabPadding(l, 0),
       itemCount: items.length,
       itemBuilder: (ctx, i) {
         final e = Map<String, dynamic>.from(items[i] as Map);
@@ -940,7 +967,7 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
             const SizedBox(height: 10),
             TextFormField(
               controller: _rate,
-              keyboardType: TextInputType.number,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(labelText: _rateLabel),
             ),
             const SizedBox(height: 10),
