@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/auth/auth_controller.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
 import '../data/chitfund_repo.dart';
@@ -50,8 +51,14 @@ class _ChitfundListPageState extends ConsumerState<ChitfundListPage> {
                 final c = Map<String, dynamic>.from(items[i] as Map);
                 final chitTime = c['chitTime']?.toString().trim() ?? '';
                 final officer = Map<String, dynamic>.from(c['assignedTo'] ?? {})['name']?.toString() ?? '';
+                final duration = toNum(c['durationMonths']).toInt();
+                final auctionsDone = toNum(Map<String, dynamic>.from(c['_count'] ?? {})['auctions']).toInt();
+                // Mirrors the web list: a chit whose every month has been auctioned is
+                // finished in practice even while its status still reads ACTIVE.
+                final allAuctionsDone = duration > 0 && auctionsDone >= duration;
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  color: allAuctionsDone ? AppColors.accent.withValues(alpha: 0.12) : null,
                   child: ListTile(
                     onTap: () => context.push('/chitfunds/${c['id']}'),
                     title: Text(c['name']?.toString() ?? ''),
@@ -59,6 +66,7 @@ class _ChitfundListPageState extends ConsumerState<ChitfundListPage> {
                       formatCurrency(c['totalAmount']),
                       '${c['durationMonths'] ?? 0}m',
                       '${c['totalMembers'] ?? 0} members',
+                      '$auctionsDone/$duration auctions',
                       if (chitTime.isNotEmpty) formatChitTime(chitTime),
                       if (officer.isNotEmpty) '👤 $officer',
                     ].join(' • ')),

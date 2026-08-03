@@ -151,7 +151,12 @@ class _CustomerListPageState extends ConsumerState<CustomerListPage> {
                               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                               child: ListTile(
                                 onTap: () => context.push('/customers/${c['id']}'),
-                                leading: Avatar(url: c['photo']?.toString(), name: fullName, size: 40),
+                                // Tapping the photo zooms it; without a photo the tap
+                                // falls through to the row (no recognizer registered).
+                                leading: GestureDetector(
+                                  onTap: c['photo'] != null ? () => showImageViewer(ctx, c['photo']?.toString()) : null,
+                                  child: Avatar(url: c['photo']?.toString(), name: fullName, size: 40),
+                                ),
                                 title: Text(fullName, style: const TextStyle(fontWeight: FontWeight.w600)),
                                 subtitle: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,

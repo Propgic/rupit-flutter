@@ -614,29 +614,37 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
                       if ((c['calendarMonth'] ?? c['currentMonth']) != null) 'Month ${c['calendarMonth'] ?? c['currentMonth']}',
                       if (assignee['name'] != null) 'Agent: ${assignee['name']}',
                     ].join(' · ');
-                    return InkWell(
-                      onTap: () => _selectChit(c),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.savings_outlined, color: AppColors.accent),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('${c['chitNumber'] ?? ''}${c['name'] != null ? ' · ${c['name']}' : ''}'.trim(),
-                                      style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
-                                  if (subtitle.isNotEmpty) ...[
-                                    const SizedBox(height: 2),
-                                    Text(subtitle, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                    // Green row = every month auctioned, so only collections remain. Mirrors
+                    // the chit list on both this app and the web.
+                    final duration = toNum(c['durationMonths']).toInt();
+                    final auctionsDone = toNum(Map<String, dynamic>.from(c['_count'] ?? {})['auctions']).toInt();
+                    final allAuctionsDone = duration > 0 && auctionsDone >= duration;
+                    return Ink(
+                      color: allAuctionsDone ? AppColors.accent.withValues(alpha: 0.12) : null,
+                      child: InkWell(
+                        onTap: () => _selectChit(c),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.savings_outlined, color: AppColors.accent),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('${c['chitNumber'] ?? ''}${c['name'] != null ? ' · ${c['name']}' : ''}'.trim(),
+                                        style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                                    if (subtitle.isNotEmpty) ...[
+                                      const SizedBox(height: 2),
+                                      Text(subtitle, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
-                            ),
-                            const Icon(Icons.chevron_right, color: AppColors.textMuted),
-                          ],
+                              const Icon(Icons.chevron_right, color: AppColors.textMuted),
+                            ],
+                          ),
                         ),
                       ),
                     );

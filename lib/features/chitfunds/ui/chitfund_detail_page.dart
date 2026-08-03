@@ -54,6 +54,19 @@ bool _canDeletePayment(Map<String, dynamic> row, String? role) {
   return false;
 }
 
+// Unsettling a payout is an undo for a data-entry mistake, not an ongoing edit,
+// so the action disappears 24h after settlement (the backend enforces the same
+// rule in unsettlePayout). The window runs from settledAt — the real clock —
+// not paidDate, which organizers backdate to the chit date.
+const _unsettleWindowMs = 24 * 60 * 60 * 1000;
+bool _canUnsettlePayout(Map<String, dynamic> po) {
+  if (po['status'] != 'PAID') return false;
+  final sa = po['settledAt'];
+  final t = sa == null ? null : DateTime.tryParse(sa.toString());
+  if (t == null) return false;
+  return DateTime.now().difference(t).inMilliseconds <= _unsettleWindowMs;
+}
+
 // The chit installment that belongs to the current calendar month. A monthly chit has one
 // installment per calendar month, so the "current month" is just how many calendar months
 // have elapsed since the start month (1-based) — regardless of the day-of-month or of whether
@@ -1032,6 +1045,8 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
           itemBuilder: (ctx, i) {
             final po = Map<String, dynamic>.from(items[i] as Map);
             final isPaid = po['status'] == 'PAID';
+            final showSettle = _canManage && !isPaid;
+            final showUnsettle = _canManage && isPaid && _canUnsettlePayout(po);
             final mem = memberById[po['chitfundMemberId']?.toString()];
             final cust = mem != null && mem['customer'] != null ? Map<String, dynamic>.from(mem['customer'] as Map) : {};
             final winnerLabel = mem != null
@@ -1055,18 +1070,18 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(formatCurrency(po['amount']), style: const TextStyle(fontWeight: FontWeight.w600)),
-                    if (_canManage)
-                      isPaid
-                          ? IconButton(
-                              tooltip: 'Unsettle',
-                              icon: const Icon(Icons.restart_alt, color: AppColors.danger, size: 22),
-                              onPressed: () => _unsettlePayout(po),
-                            )
-                          : IconButton(
-                              tooltip: 'Pay winner',
-                              icon: const Icon(Icons.payments, color: AppColors.primary, size: 22),
-                              onPressed: () => _settlePayout(c, po),
-                            ),
+                    if (showUnsettle)
+                      IconButton(
+                        tooltip: 'Unsettle',
+                        icon: const Icon(Icons.restart_alt, color: AppColors.danger, size: 22),
+                        onPressed: () => _unsettlePayout(po),
+                      ),
+                    if (showSettle)
+                      IconButton(
+                        tooltip: 'Pay winner',
+                        icon: const Icon(Icons.payments, color: AppColors.primary, size: 22),
+                        onPressed: () => _settlePayout(c, po),
+                      ),
                   ],
                 ),
               ),

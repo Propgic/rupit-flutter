@@ -132,9 +132,12 @@ class DashboardPage extends ConsumerWidget {
     final dayInflow = showOrgCash
         ? toNum(d['totalCollectionsToday']) + toNum(d['todayInvestmentAmount']) + toNum(d['todayChitCollectionAmount'])
         : toNum(c['dayCollectionAmount']);
+    // Owner profit drawings are chit cash out in both scopes — they leave the till the
+    // same way a winner payout does, so they belong in Outflow, not under Expenses.
+    final dayProfitWithdrawal = toNum(c['dayProfitWithdrawalAmount']);
     final dayOutflow = showOrgCash
-        ? toNum(d['todayDisbursedAmount']) + toNum(d['todayExpensesAmount']) + toNum(d['todayInvestmentWithdrawalsAmount']) + toNum(d['todayChitPayoutAmount'])
-        : toNum(c['dayPayoutAmount']);
+        ? toNum(d['todayDisbursedAmount']) + toNum(d['todayExpensesAmount']) + toNum(d['todayInvestmentWithdrawalsAmount']) + toNum(d['todayChitPayoutAmount']) + dayProfitWithdrawal
+        : toNum(c['dayPayoutAmount']) + dayProfitWithdrawal;
 
     final auctions = ((c['auctionsToConduct'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
     final payouts = ((c['pendingAuctionPayments'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -195,7 +198,7 @@ class DashboardPage extends ConsumerWidget {
         ),
         if (showDaySummary) _chitDaySummaryCard(c, d, showOrgCash: showOrgCash, enableExpenses: enableExpenses, enableInvestments: enableInvestments),
         if (showMemberDues) _chitMemberDuesCard(c),
-        if (showDayReport) _chitDayReportCard(d, dayOpen, dayInflow, dayOutflow, dayClosing, showOrgCash),
+        if (showDayReport) _chitDayReportCard(c, d, dayOpen, dayInflow, dayOutflow, dayClosing, showOrgCash),
         if (showAuctionsToConduct) _chitAuctionsCard(context, auctions),
         if (showAuctionPayouts) _chitPayoutsCard(context, c, payouts),
       ],
@@ -213,6 +216,11 @@ class DashboardPage extends ConsumerWidget {
           const Divider(height: 1),
           _kvRow('Payouts${toNum(c['dayPayoutCount']) > 0 ? ' (${toNum(c['dayPayoutCount']).toInt()})' : ''}',
               formatCurrency(c['dayPayoutAmount']), color: AppColors.danger),
+          if (toNum(c['dayProfitWithdrawalAmount']) > 0) ...[
+            const Divider(height: 1),
+            _kvRow('Profit Withdrawn${toNum(c['dayProfitWithdrawalCount']) > 0 ? ' (${toNum(c['dayProfitWithdrawalCount']).toInt()})' : ''}',
+                formatCurrency(c['dayProfitWithdrawalAmount']), color: AppColors.danger),
+          ],
           if (showOrgCash && enableExpenses) ...[
             const Divider(height: 1),
             _kvRow('Expenses', formatCurrency(d['todayExpensesAmount']), color: AppColors.danger),
@@ -241,9 +249,10 @@ class DashboardPage extends ConsumerWidget {
     );
   }
 
-  Widget _chitDayReportCard(Map<String, dynamic> d, num open, num inflow, num outflow, num closing, bool showOrgCash) {
+  Widget _chitDayReportCard(Map<String, dynamic> c, Map<String, dynamic> d, num open, num inflow, num outflow, num closing, bool showOrgCash) {
     final expenses = toNum(d['todayExpensesAmount']);
     final withdrawals = toNum(d['todayInvestmentWithdrawalsAmount']);
+    final profitWithdrawn = toNum(c['dayProfitWithdrawalAmount']);
     return SectionCard(
       title: 'Day Report',
       child: Column(
@@ -253,6 +262,14 @@ class DashboardPage extends ConsumerWidget {
           _kvRow('Inflow', formatCurrency(inflow), color: AppColors.accent),
           const Divider(height: 1),
           _kvRow('Outflow', formatCurrency(outflow), color: AppColors.danger),
+          if (profitWithdrawn > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 16, top: 2, bottom: 2),
+              child: Row(children: [
+                const Expanded(child: Text('Profit Withdrawn', style: TextStyle(fontSize: 12, color: AppColors.textSecondary))),
+                Text(formatCurrency(profitWithdrawn), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.danger)),
+              ]),
+            ),
           if (showOrgCash && expenses > 0)
             Padding(
               padding: const EdgeInsets.only(left: 16, top: 2, bottom: 2),
@@ -580,8 +597,9 @@ class DashboardPage extends ConsumerWidget {
     final openBal = toNum(d['openBalance']);
     final closing = toNum(d['closingBalance']);
     final withdrawals = toNum(d['todayInvestmentWithdrawalsAmount']);
+    final chitProfitWithdrawn = toNum(d['todayChitProfitWithdrawalAmount']);
     final inflow = toNum(d['totalCollectionsToday']) + toNum(d['todayInvestmentAmount']) + toNum(d['todayChitCollectionAmount']);
-    final outflow = toNum(d['todayDisbursedAmount']) + toNum(d['todayExpensesAmount']) + withdrawals + toNum(d['todayChitPayoutAmount']);
+    final outflow = toNum(d['todayDisbursedAmount']) + toNum(d['todayExpensesAmount']) + withdrawals + toNum(d['todayChitPayoutAmount']) + chitProfitWithdrawn;
     return SectionCard(
       title: 'Day Report',
       child: Column(
@@ -598,6 +616,16 @@ class DashboardPage extends ConsumerWidget {
                 children: [
                   Expanded(child: Text('Investment Withdrawals', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary))),
                   Text(formatCurrency(withdrawals), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.danger)),
+                ],
+              ),
+            ),
+          if (chitProfitWithdrawn > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 16, top: 2, bottom: 2),
+              child: Row(
+                children: [
+                  const Expanded(child: Text('Chit Profit Withdrawn', style: TextStyle(fontSize: 12, color: AppColors.textSecondary))),
+                  Text(formatCurrency(chitProfitWithdrawn), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.danger)),
                 ],
               ),
             ),

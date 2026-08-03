@@ -384,6 +384,11 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                         // Leaving GROUP drops the batch down to one borrower so a
                         // stray multi-selection can't create several loans at once.
                         if (_customers.length > 1) _customers = [_customers.first];
+                        // Clear the group-only fee fields (their inputs unmount but
+                        // the controllers keep the text, which would still be
+                        // deducted from net disbursed).
+                        _fee.clear();
+                        _alr.clear();
                       }
                     }),
                   ),
@@ -542,28 +547,30 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                       if (d != null) setState(() => _startDate = d);
                     },
                   ),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(controller: _fee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Processing Fee')),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _alr,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          decoration: const InputDecoration(labelText: 'ALR'),
-                          validator: (v) {
-                            final t = v?.trim() ?? '';
-                            if (t.isEmpty) return null;
-                            final n = double.tryParse(t);
-                            return n == null || n < 0 ? 'Invalid value' : null;
-                          },
+                  if (_isGroupLoan) ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextFormField(controller: _fee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Processing Fee')),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _alr,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'ALR'),
+                            validator: (v) {
+                              final t = v?.trim() ?? '';
+                              if (t.isEmpty) return null;
+                              final n = double.tryParse(t);
+                              return n == null || n < 0 ? 'Invalid value' : null;
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   TextFormField(controller: _lateFee, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Late Fee Per Day')),
                 ],
               ),

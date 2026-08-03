@@ -375,12 +375,18 @@ class _CollectionListPageState extends ConsumerState<CollectionListPage> {
                         final ref = isChit
                             ? '${chit['chitNumber'] ?? chit['name'] ?? 'Chit'}${c['monthNumber'] != null ? ' · M${c['monthNumber']}' : ''}'
                             : (loan['loanNumber']?.toString() ?? '');
+                        final custName = '${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim();
                         return Card(
                           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                           child: ListTile(
                             onTap: () => context.push('/collections/${c['id']}/receipt'),
-                            leading: Icon(isChit ? Icons.savings_outlined : Icons.receipt_long_outlined, color: AppColors.accent),
-                            title: Text('${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim()),
+                            // Tapping the photo zooms it; without a photo the tap
+                            // falls through to the row (no recognizer registered).
+                            leading: GestureDetector(
+                              onTap: cust['photo'] != null ? () => showImageViewer(ctx, cust['photo']?.toString()) : null,
+                              child: Avatar(url: cust['photo']?.toString(), name: custName, size: 40),
+                            ),
+                            title: Text(custName),
                             subtitle: Text('$ref • ${formatDateTime(c['collectedAt'])}'),
                             trailing: Column(
                               mainAxisAlignment: MainAxisAlignment.center,

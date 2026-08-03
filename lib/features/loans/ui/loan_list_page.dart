@@ -453,186 +453,245 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
       floatingActionButton: canCreate
           ? FloatingActionButton.extended(onPressed: () => context.push('/loans/new'), icon: const Icon(Icons.add), label: const Text('New'))
           : null,
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    decoration: const InputDecoration(hintText: 'Search loan number, customer...', prefixIcon: Icon(Icons.search)),
-                    onSubmitted: (v) {
-                      _search = v.trim().isEmpty ? null : v.trim();
-                      _load(reset: true);
+      // Everything above the list scrolls away with it (search, type chips,
+      // metrics) so the loans get the full screen once you start scrolling;
+      // only the status pills stay pinned for quick tab switching.
+      body: RefreshIndicator(
+        onRefresh: () => _load(reset: true),
+        child: CustomScrollView(
+          controller: _scroll,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _searchCtrl,
+                        decoration: const InputDecoration(hintText: 'Search loan number, customer...', prefixIcon: Icon(Icons.search)),
+                        onSubmitted: (v) {
+                          _search = v.trim().isEmpty ? null : v.trim();
+                          _load(reset: true);
+                        },
+                      ),
+                    ),
+                    if (showFilterIcon) ...[
+                      const SizedBox(width: 8),
+                      Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.tune),
+                            tooltip: 'Filters',
+                            onPressed: _openAdvancedFilters,
+                          ),
+                          if (activeFilterCount > 0)
+                            Positioned(
+                              right: 4,
+                              top: 4,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
+                                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                                child: Text(
+                                  '$activeFilterCount',
+                                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            if (typeTabs.isNotEmpty)
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 40,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    itemCount: typeTabs.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 6),
+                    itemBuilder: (_, i) {
+                      final e = typeTabs[i];
+                      final selected = _typeTab == e.key;
+                      return ChoiceChip(
+                        label: Text(
+                          e.value,
+                          style: TextStyle(
+                            color: selected ? AppColors.primary : AppColors.textPrimary,
+                            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                          ),
+                        ),
+                        selected: selected,
+                        showCheckmark: false,
+                        backgroundColor: Colors.white,
+                        selectedColor: AppColors.primary.withValues(alpha: 0.12),
+                        side: BorderSide(color: selected ? AppColors.primary : AppColors.border),
+                        onSelected: (_) {
+                          if (selected) return;
+                          setState(() => _typeTab = e.key);
+                          _load(reset: true);
+                        },
+                      );
                     },
                   ),
                 ),
-                if (showFilterIcon) ...[
-                  const SizedBox(width: 8),
-                  Stack(
-                    clipBehavior: Clip.none,
+              ),
+            SliverToBoxAdapter(child: _buildMetrics()),
+            // Pinned so Active/Closed/Archived/All stays reachable after the
+            // summary has scrolled away. Extent tracks the user's text scale.
+            SliverPersistentHeader(
+              pinned: true,
+              delegate: _PinnedHeaderDelegate(
+                height: 34 + MediaQuery.textScalerOf(context).scale(18),
+                child: Container(
+                  color: AppColors.bg,
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  child: Row(
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.tune),
-                        tooltip: 'Filters',
-                        onPressed: _openAdvancedFilters,
-                      ),
-                      if (activeFilterCount > 0)
-                        Positioned(
-                          right: 4,
-                          top: 4,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
-                            constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
-                            child: Text(
-                              '$activeFilterCount',
-                              style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                              textAlign: TextAlign.center,
-                            ),
+                      for (final pill in statusPills) ...[
+                        Expanded(
+                          child: _StatusPill(
+                            label: pill[1],
+                            selected: _statusTab == pill[0],
+                            onTap: () {
+                              if (_statusTab == pill[0]) return;
+                              setState(() {
+                                _statusTab = pill[0];
+                                _statusFilter = null;
+                              });
+                              _load(reset: true);
+                            },
                           ),
                         ),
+                      ],
                     ],
                   ),
-                ],
-              ],
-            ),
-          ),
-          if (typeTabs.isNotEmpty)
-            SizedBox(
-              height: 40,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                itemCount: typeTabs.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 6),
-                itemBuilder: (_, i) {
-                  final e = typeTabs[i];
-                  final selected = _typeTab == e.key;
-                  return ChoiceChip(
-                    label: Text(
-                      e.value,
-                      style: TextStyle(
-                        color: selected ? AppColors.primary : AppColors.textPrimary,
-                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                      ),
-                    ),
-                    selected: selected,
-                    showCheckmark: false,
-                    backgroundColor: Colors.white,
-                    selectedColor: AppColors.primary.withValues(alpha: 0.12),
-                    side: BorderSide(color: selected ? AppColors.primary : AppColors.border),
-                    onSelected: (_) {
-                      if (selected) return;
-                      setState(() => _typeTab = e.key);
-                      _load(reset: true);
-                    },
-                  );
-                },
+                ),
               ),
             ),
-          _buildMetrics(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-            child: Row(
-              children: [
-                for (final pill in statusPills) ...[
-                  Expanded(
-                    child: _StatusPill(
-                      label: pill[1],
-                      selected: _statusTab == pill[0],
-                      onTap: () {
-                        if (_statusTab == pill[0]) return;
-                        setState(() {
-                          _statusTab = pill[0];
-                          _statusFilter = null;
-                        });
-                        _load(reset: true);
-                      },
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: () => _load(reset: true),
-              child: _error != null && _items.isEmpty
-                  ? ErrorView(message: _error.toString(), onRetry: () => _load(reset: true))
-                  : _items.isEmpty && !_loading
-                      ? const EmptyView(message: 'No loans', icon: Icons.request_quote_outlined)
-                      : ListView.builder(
-                          controller: _scroll,
-                          itemCount: _items.length + (_loading ? 1 : 0),
-                          itemBuilder: (ctx, i) {
-                            if (i >= _items.length) {
-                              return const Padding(padding: EdgeInsets.all(16), child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
-                            }
-                            final l = _items[i];
-                            final c = Map<String, dynamic>.from(l['customer'] ?? {});
-                            final dayWeek = _dayWeekLabel(l['disbursedDate'], l['loanType']?.toString());
-                            final timeline = <String>[
-                              if (dayWeek != '-') dayWeek,
-                              if (l['endDate'] != null) 'Ends ${formatDate(l['endDate'])}',
-                            ].join(' · ');
-                            return Card(
-                              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                              child: ListTile(
-                                onTap: () => context.push('/loans/${l['id']}'),
-                                title: Text(l['loanNumber']?.toString() ?? ''),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim(),
-                                        style: const TextStyle(fontWeight: FontWeight.w500)),
-                                    Text('${l['loanType'] ?? ''} • ${formatCurrency(l['principalAmount'])}',
-                                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                                    Text('Balance: ${formatCurrency(l['balance'])}',
-                                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                                    Text('Total Paid: ${formatCurrency(l['totalPaid'])}',
-                                        style: const TextStyle(fontSize: 12, color: AppColors.accent, fontWeight: FontWeight.w600)),
-                                    if (timeline.isNotEmpty)
-                                      Text(timeline,
-                                          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                                    if (l['status'] == 'ACTIVE' && toNum(l['overdueAmount']) > 0) ...[
-                                      Text('Overdue: ${formatCurrency(l['overdueAmount'])} (${l['overdueCount']} installment${(l['overdueCount'] ?? 0) > 1 ? 's' : ''})',
-                                          style: const TextStyle(fontSize: 11, color: AppColors.danger, fontWeight: FontWeight.w600)),
-                                      if (toNum(l['pendingCollections']) > 0)
-                                        Text('⏳ ${formatCurrency(l['pendingCollections'])} pending verification',
-                                            style: const TextStyle(fontSize: 10, color: AppColors.warning)),
-                                    ] else if (l['status'] == 'ACTIVE' && toNum(l['dueTodayAmount']) > 0)
-                                      // No overdue flagged, but money is still owed up to today
-                                      // (e.g. a partially paid current/last EMI) — mirrors the
-                                      // web list's "Due Today" column so it isn't hidden.
-                                      Text('Due Today: ${formatCurrency(l['dueTodayAmount'])}',
-                                          style: const TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.w600))
-                                    else if (l['status'] == 'ACTIVE' && toNum(l['excessAmount']) > 0)
-                                      Text('+${formatCurrency(l['excessAmount'])} advance',
-                                          style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.w600)),
-                                  ],
-                                ),
-                                trailing: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    StatusChip(label: l['status']?.toString() ?? '', color: statusColor(l['status']?.toString())),
-                                    const SizedBox(height: 4),
-                                    Text(formatDate(l['startDate']), style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-            ),
-          ),
-        ],
+            if (_error != null && _items.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: ErrorView(message: _error.toString(), onRetry: () => _load(reset: true)),
+              )
+            else if (_items.isEmpty && !_loading)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: EmptyView(message: 'No loans', icon: Icons.request_quote_outlined),
+              )
+            else
+              SliverPadding(
+                // Clears the extended FAB over the last card.
+                padding: const EdgeInsets.only(bottom: 80),
+                sliver: SliverList.builder(
+                  itemCount: _items.length + (_loading ? 1 : 0),
+                  itemBuilder: _loanTile,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
+
+  /// One loan card; the index past the end renders the pagination spinner
+  /// while the next page loads.
+  Widget _loanTile(BuildContext ctx, int i) {
+    if (i >= _items.length) {
+      return const Padding(padding: EdgeInsets.all(16), child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
+    }
+    final l = _items[i];
+    final c = Map<String, dynamic>.from(l['customer'] ?? {});
+    final dayWeek = _dayWeekLabel(l['disbursedDate'], l['loanType']?.toString());
+    final timeline = <String>[
+      if (dayWeek != '-') dayWeek,
+      if (l['endDate'] != null) 'Ends ${formatDate(l['endDate'])}',
+    ].join(' · ');
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: ListTile(
+        onTap: () => context.push('/loans/${l['id']}'),
+        title: Text(l['loanNumber']?.toString() ?? ''),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim(),
+                style: const TextStyle(fontWeight: FontWeight.w500)),
+            Text('${l['loanType'] ?? ''} • ${formatCurrency(l['principalAmount'])}',
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            Text('Balance: ${formatCurrency(l['balance'])}',
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            Text('Total Paid: ${formatCurrency(l['totalPaid'])}',
+                style: const TextStyle(fontSize: 12, color: AppColors.accent, fontWeight: FontWeight.w600)),
+            // Mirrors the web list's Total Paid column: pending collections
+            // are either already counted in totalPaid or additional to it.
+            if (toNum(l['pendingCollections']) > 0)
+              Text(
+                  l['pendingCounted'] == true
+                      ? 'incl. ${formatCurrency(l['pendingCollections'])} pending'
+                      : '+ ${formatCurrency(l['pendingCollections'])} pending',
+                  style: const TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.w500)),
+            if (timeline.isNotEmpty)
+              Text(timeline,
+                  style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+            if (l['status'] == 'ACTIVE' && toNum(l['overdueAmount']) > 0) ...[
+              Text('Overdue: ${formatCurrency(l['overdueAmount'])} (${l['overdueCount']} installment${(l['overdueCount'] ?? 0) > 1 ? 's' : ''})',
+                  style: const TextStyle(fontSize: 11, color: AppColors.danger, fontWeight: FontWeight.w600)),
+              if (l['pendingCounted'] != true && toNum(l['pendingCollections']) > 0)
+                Text('✓ ${formatCurrency(l['pendingCollections'])} collected',
+                    style: const TextStyle(fontSize: 10, color: AppColors.accent)),
+            ] else if (l['status'] == 'ACTIVE' && toNum(l['dueTodayAmount']) > 0)
+              // No overdue flagged, but money is still owed up to today
+              // (e.g. a partially paid current/last EMI) — mirrors the
+              // web list's "Due Today" column so it isn't hidden.
+              Text('Due Today: ${formatCurrency(l['dueTodayAmount'])}',
+                  style: const TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.w600))
+            else if (l['status'] == 'ACTIVE' && toNum(l['excessAmount']) > 0)
+              Text('+${formatCurrency(l['excessAmount'])} advance',
+                  style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.w600)),
+          ],
+        ),
+        trailing: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            StatusChip(label: l['status']?.toString() ?? '', color: statusColor(l['status']?.toString())),
+            const SizedBox(height: 4),
+            Text(formatDate(l['startDate']), style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Fixed-extent pinned header with an opaque background so the loan cards
+/// don't show through as they scroll underneath.
+class _PinnedHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final double height;
+  final Widget child;
+  _PinnedHeaderDelegate({required this.height, required this.child});
+
+  @override
+  double get minExtent => height;
+  @override
+  double get maxExtent => height;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) =>
+      SizedBox.expand(child: child);
+
+  @override
+  bool shouldRebuild(covariant _PinnedHeaderDelegate oldDelegate) =>
+      oldDelegate.height != height || oldDelegate.child != child;
 }
 
 /// Tappable date field for the filter sheet; shows the picked date (or "Any") and
