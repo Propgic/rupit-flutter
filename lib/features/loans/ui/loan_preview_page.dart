@@ -145,12 +145,14 @@ LoanPreview computeLoanPreview({
   );
 }
 
-/// Full-screen review shown before the loan is actually created. On confirm it posts
-/// the prepared [body] and routes to the loans list.
+/// Full-screen review shown before the loans are actually created. On confirm it
+/// posts the prepared [body] once per customer and routes to the loans list.
+/// More than one customer only occurs for group loans, where the whole batch
+/// shares the terms on [body].
 class LoanPreviewPage extends ConsumerStatefulWidget {
-  final Map<String, dynamic> body;
+  final Map<String, dynamic> body; // shared terms — customerId is added per customer
   final LoanPreview preview;
-  final String customerLabel;
+  final List<Map<String, dynamic>> customers; // {id, label} — one loan each
   final String loanTypeLabel;
   final String? assigneeLabel;
   final DateTime startDate;
@@ -159,7 +161,7 @@ class LoanPreviewPage extends ConsumerStatefulWidget {
     super.key,
     required this.body,
     required this.preview,
-    required this.customerLabel,
+    required this.customers,
     required this.loanTypeLabel,
     required this.assigneeLabel,
     required this.startDate,
@@ -172,6 +174,9 @@ class LoanPreviewPage extends ConsumerStatefulWidget {
 
 class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
   bool _saving = false;
+  // Customers still awaiting creation — each success is removed as it posts, so
+  // retrying after a partial failure never books the same loan twice.
+  late final List<Map<String, dynamic>> _pending = [...widget.customers];
 
   DateTime get _endDate {
     final p = widget.preview;
@@ -190,19 +195,32 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
 
   Future<void> _confirm() async {
     setState(() => _saving = true);
-    try {
-      await ref.read(loanRepoProvider).create(widget.body);
-      showToast('Loan created');
-      if (mounted) context.go('/loans');
-    } on ApiException catch (e) {
-      showToast(e.message, error: true);
-      if (mounted) setState(() => _saving = false);
+    final failures = <String>[];
+    for (final c in List.of(_pending)) {
+      try {
+        await ref.read(loanRepoProvider).create({...widget.body, 'customerId': c['id']});
+        _pending.remove(c);
+      } on ApiException catch (e) {
+        failures.add('${c['label']}: ${e.message}');
+      }
     }
+    final total = widget.customers.length;
+    if (_pending.isEmpty) {
+      showToast(total == 1 ? 'Loan created' : '$total loans created');
+      if (mounted) context.go('/loans');
+      return;
+    }
+    showToast(
+      'Created ${total - _pending.length} of $total loans. ${failures.first}',
+      error: true,
+    );
+    if (mounted) setState(() => _saving = false);
   }
 
   @override
   Widget build(BuildContext context) {
     final p = widget.preview;
+    final n = widget.customers.length;
     return Scaffold(
       appBar: AppBar(title: const Text('Review & Confirm')),
       body: ListView(
@@ -212,7 +230,10 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
             title: 'Summary',
             child: Column(
               children: [
-                KeyValueRow(label: 'Customer', value: widget.customerLabel),
+                if (n == 1)
+                  KeyValueRow(label: 'Customer', value: widget.customers.first['label'].toString())
+                else
+                  KeyValueRow(label: 'Customers', value: '$n — one loan each'),
                 KeyValueRow(label: 'Loan Type', value: widget.loanTypeLabel),
                 if ((widget.assigneeLabel ?? '').isNotEmpty)
                   KeyValueRow(label: 'Assigned To', value: widget.assigneeLabel!),
@@ -231,8 +252,22 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
               ],
             ),
           ),
+          if (n > 1)
+            SectionCard(
+              title: 'Borrowers ($n)',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final c in widget.customers)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text('• ${c['label']}'),
+                    ),
+                ],
+              ),
+            ),
           SectionCard(
-            title: 'Disbursement',
+            title: n > 1 ? 'Disbursement (per loan)' : 'Disbursement',
             child: Column(
               children: [
                 _amountRow('Principal Amount', p.principal),
@@ -240,10 +275,16 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
                 if (p.processingFee > 0) _amountRow('Processing Fee Deducted', -p.processingFee, negative: true),
                 const Divider(),
                 _amountRow('Net Amount to Customer', p.netDisbursed, bold: true, color: AppColors.accent),
+                if (n > 1) ...[
+                  const Divider(),
+                  _amountRow('Total Principal ($n loans)', p.principal * n),
+                  _amountRow('Total Disbursed ($n loans)', p.netDisbursed * n, bold: true),
+                ],
               ],
             ),
           ),
           SectionCard(
+            title: n > 1 ? 'Per Loan' : null,
             child: Row(
               children: [
                 Expanded(
@@ -269,7 +310,11 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
                   onPressed: _saving ? null : _confirm,
                   child: _saving
                       ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Text('Confirm & Create'),
+                      : Text(_pending.length < n
+                          ? 'Retry ${_pending.length} Failed'
+                          : n == 1
+                              ? 'Confirm & Create'
+                              : 'Confirm & Create $n Loans'),
                 ),
               ),
             ],

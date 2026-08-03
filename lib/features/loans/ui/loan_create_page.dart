@@ -17,7 +17,9 @@ class LoanCreatePage extends ConsumerStatefulWidget {
 
 class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   final _formKey = GlobalKey<FormState>();
-  Map<String, dynamic>? _customer;
+  // One loan is created per selected customer. Only group loans are issued in
+  // batches, so the picker allows multiple customers only when the type is GROUP.
+  List<Map<String, dynamic>> _customers = [];
   Map<String, dynamic>? _assignee;
   Map<String, dynamic>? _group;
   String _loanType = 'PERSONAL';
@@ -65,6 +67,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
 
   String get _suretyPolicy => _suretyByType[_loanType] ?? 'OPTIONAL';
 
+  bool get _isGroupLoan => _loanType == 'GROUP';
+
   // DAILY/WEEKLY loan TYPES are fixed flat-upfront — the method picker is only for term loans.
   bool get _showInterestMethod => _loanType != 'DAILY' && _loanType != 'WEEKLY';
   // Sub-monthly cadence (tenure counted in weeks/days) chosen via the tenure Unit dropdown.
@@ -78,23 +82,46 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
     return 'Interest Rate (% p.a.) *';
   }
 
+  String _customerName(Map<String, dynamic> c) =>
+      '${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim();
+
   Future<void> _pickCustomer() async {
+    Future<List<Map<String, dynamic>>> fetch(String search) async {
+      final r = await ref.read(customerRepoProvider).list(page: 1, limit: 20, search: search, forLoan: true);
+      return ((r['data'] as List?) ?? [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    }
+    String subtitle(Map<String, dynamic> m) => '${m['customerId'] ?? ''} • ${m['phone'] ?? ''}';
+
+    if (_isGroupLoan) {
+      final picked = await showModalBottomSheet<List<Map<String, dynamic>>>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => _PickerSheet<Map<String, dynamic>>(
+          title: 'Select Customers',
+          fetcher: fetch,
+          labelBuilder: _customerName,
+          subtitleBuilder: subtitle,
+          multi: true,
+          initialSelected: _customers,
+          idOf: (m) => m['id'].toString(),
+        ),
+      );
+      if (picked != null) setState(() => _customers = picked);
+      return;
+    }
     final picked = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
       builder: (_) => _PickerSheet<Map<String, dynamic>>(
         title: 'Select Customer',
-        fetcher: (search) async {
-          final r = await ref.read(customerRepoProvider).list(page: 1, limit: 20, search: search, forLoan: true);
-          return ((r['data'] as List?) ?? [])
-              .map((e) => Map<String, dynamic>.from(e as Map))
-              .toList();
-        },
-        labelBuilder: (m) => '${m['firstName'] ?? ''} ${m['lastName'] ?? ''}'.trim(),
-        subtitleBuilder: (m) => '${m['customerId'] ?? ''} • ${m['phone'] ?? ''}',
+        fetcher: fetch,
+        labelBuilder: _customerName,
+        subtitleBuilder: subtitle,
       ),
     );
-    if (picked != null) setState(() => _customer = picked);
+    if (picked != null) setState(() => _customers = [picked]);
   }
 
   Future<void> _pickAssignee() async {
@@ -238,7 +265,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   Future<void> _review() async {
     if (!_formKey.currentState!.validate()) return;
     if (_loanType == 'GROUP' && _group == null) return showToast('Select a loan group', error: true);
-    if (_customer == null) return showToast('Select a customer', error: true);
+    if (_customers.isEmpty) {
+      return showToast(_isGroupLoan ? 'Select at least one customer' : 'Select a customer', error: true);
+    }
     if (_assignee == null) {
       final proceed = await confirmDialog(
         context,
@@ -253,8 +282,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       return showToast('Surety name and phone are required for this loan type', error: true);
     }
 
+    // Shared terms for every loan in this pass — customerId is appended per
+    // customer on the preview page when the loans are actually posted.
     final body = <String, dynamic>{
-      'customerId': _customer!['id'],
       if (_assignee != null) 'assignedToId': _assignee!['id'],
       'loanType': _loanType,
       'principalAmount': double.tryParse(_principal.text),
@@ -306,7 +336,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       builder: (_) => LoanPreviewPage(
         body: body,
         preview: preview,
-        customerLabel: '${_customer!['firstName'] ?? ''} ${_customer!['lastName'] ?? ''}'.trim(),
+        customers: _customers
+            .map((c) => {'id': c['id'], 'label': _customerName(c)})
+            .toList(),
         loanTypeLabel: titleCase(_loanType),
         assigneeLabel: _assignee?['name']?.toString(),
         startDate: _startDate,
@@ -347,7 +379,12 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                     ],
                     onChanged: (v) => setState(() {
                       _loanType = v!;
-                      if (_loanType != 'GROUP') _group = null;
+                      if (_loanType != 'GROUP') {
+                        _group = null;
+                        // Leaving GROUP drops the batch down to one borrower so a
+                        // stray multi-selection can't create several loans at once.
+                        if (_customers.length > 1) _customers = [_customers.first];
+                      }
                     }),
                   ),
                   if (_loanType == 'GROUP')
@@ -380,9 +417,17 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                     ),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.person),
-                    title: Text(_customer == null ? 'Select Customer *' : '${_customer!['firstName']} ${_customer!['lastName'] ?? ''}'.trim()),
-                    subtitle: _customer == null ? null : Text(_customer!['phone']?.toString() ?? ''),
+                    leading: Icon(_isGroupLoan ? Icons.group_add : Icons.person),
+                    title: Text(_customers.isEmpty
+                        ? (_isGroupLoan ? 'Select Customers *' : 'Select Customer *')
+                        : _customers.length == 1
+                            ? _customerName(_customers.first)
+                            : '${_customers.length} customers selected'),
+                    subtitle: _customers.isEmpty
+                        ? null
+                        : Text(_customers.length == 1
+                            ? _customers.first['phone']?.toString() ?? ''
+                            : '${_customers.length} separate loans will be created with the terms below'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _pickCustomer,
                   ),
@@ -604,7 +649,20 @@ class _PickerSheet<T> extends StatefulWidget {
   final Future<List<T>> Function(String search) fetcher;
   final String Function(T) labelBuilder;
   final String Function(T) subtitleBuilder;
-  const _PickerSheet({required this.title, required this.fetcher, required this.labelBuilder, required this.subtitleBuilder});
+  // Multi mode (group loans): rows toggle checkboxes, the selection survives new
+  // searches, and Done pops with a List<T> instead of popping on the first tap.
+  final bool multi;
+  final List<T> initialSelected;
+  final String Function(T)? idOf;
+  const _PickerSheet({
+    required this.title,
+    required this.fetcher,
+    required this.labelBuilder,
+    required this.subtitleBuilder,
+    this.multi = false,
+    this.initialSelected = const [],
+    this.idOf,
+  });
   @override
   State<_PickerSheet<T>> createState() => _PickerSheetState<T>();
 }
@@ -612,6 +670,19 @@ class _PickerSheet<T> extends StatefulWidget {
 class _PickerSheetState<T> extends State<_PickerSheet<T>> {
   final _search = TextEditingController();
   Future<List<T>>? _future;
+  late final List<T> _selected = [...widget.initialSelected];
+
+  String _keyOf(T item) => widget.idOf?.call(item) ?? item.toString();
+  bool _isSelected(T item) => _selected.any((e) => _keyOf(e) == _keyOf(item));
+  void _toggle(T item) {
+    setState(() {
+      if (_isSelected(item)) {
+        _selected.removeWhere((e) => _keyOf(e) == _keyOf(item));
+      } else {
+        _selected.add(item);
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -656,15 +727,43 @@ class _PickerSheetState<T> extends State<_PickerSheet<T>> {
                 return ListView.builder(
                   controller: ctrl,
                   itemCount: items.length,
-                  itemBuilder: (ctx, i) => ListTile(
-                    title: Text(widget.labelBuilder(items[i])),
-                    subtitle: Text(widget.subtitleBuilder(items[i])),
-                    onTap: () => Navigator.pop(context, items[i]),
-                  ),
+                  itemBuilder: (ctx, i) {
+                    final item = items[i];
+                    if (widget.multi) {
+                      return CheckboxListTile(
+                        value: _isSelected(item),
+                        onChanged: (_) => _toggle(item),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: Text(widget.labelBuilder(item)),
+                        subtitle: Text(widget.subtitleBuilder(item)),
+                      );
+                    }
+                    return ListTile(
+                      title: Text(widget.labelBuilder(item)),
+                      subtitle: Text(widget.subtitleBuilder(item)),
+                      onTap: () => Navigator.pop(context, item),
+                    );
+                  },
                 );
               },
             ),
           ),
+          if (widget.multi)
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                child: Row(
+                  children: [
+                    Expanded(child: Text('${_selected.length} selected')),
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(context, List<T>.from(_selected)),
+                      child: const Text('Done'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
