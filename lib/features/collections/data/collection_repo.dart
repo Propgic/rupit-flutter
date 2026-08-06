@@ -82,6 +82,20 @@ class CollectionRepo {
       if (remarks != null) 'notes': remarks,
     });
   }
+
+  /// Verify/reject a whole selection in one call. Rows that are no longer PENDING
+  /// (verified elsewhere in the meantime) are skipped server-side, so this returns the
+  /// full envelope — callers should surface `message`, which reports what actually
+  /// applied, instead of assuming the entire selection went through.
+  Future<Map<String, dynamic>> bulkVerify(List<String> ids, {required bool approve, String? remarks}) async {
+    final res = await api.raw(() => api.dio.patch('/collections/bulk-verify', data: {
+      'ids': ids,
+      'status': approve ? 'VERIFIED' : 'REJECTED',
+      if (remarks != null) 'notes': remarks,
+    }));
+    final body = res.data;
+    return body is Map ? Map<String, dynamic>.from(body) : <String, dynamic>{};
+  }
 }
 
 final collectionRepoProvider = Provider<CollectionRepo>((ref) => CollectionRepo(ref.read(apiClientProvider)));

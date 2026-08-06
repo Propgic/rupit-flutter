@@ -1102,15 +1102,28 @@ class _ChitDuesSheetState extends ConsumerState<ChitDuesSheet> {
             final name = m['customerName']?.toString() ?? '';
             final ticket = m['ticketNumber'];
             final avatarLabel = ticket != null ? '$ticket' : (name.isEmpty ? '?' : name[0].toUpperCase());
+            // Members who already took their chit are tinted orange — same cue as the chit
+            // detail Members tab — so collectors spot prized tickets at a glance.
+            final hasWon = m['hasWonAuction'] == true;
+            final accent = hasWon ? AppColors.orange : AppColors.danger;
             return ListTile(
               dense: true,
+              tileColor: hasWon ? AppColors.orange.withValues(alpha: 0.10) : null,
               onTap: () => _goMember(id, m['memberId'].toString()),
               leading: CircleAvatar(
                 radius: 15,
-                backgroundColor: AppColors.danger.withValues(alpha: 0.1),
-                child: Text(avatarLabel, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.danger)),
+                backgroundColor: accent.withValues(alpha: 0.1),
+                child: Text(avatarLabel, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: accent)),
               ),
-              title: Text(name.isEmpty ? 'Member' : name, style: const TextStyle(fontSize: 13)),
+              title: Row(
+                children: [
+                  Expanded(child: Text(name.isEmpty ? 'Member' : name, style: const TextStyle(fontSize: 13))),
+                  if (hasWon) ...[
+                    const SizedBox(width: 6),
+                    StatusChip(label: m['wonMonth'] != null ? 'Won · M${m['wonMonth']}' : 'Won', color: AppColors.orange),
+                  ],
+                ],
+              ),
               subtitle: sub.isEmpty ? null : Text(sub.join(' · '), style: const TextStyle(fontSize: 11)),
               trailing: Text(formatCurrency(m['totalDue']), style: const TextStyle(fontWeight: FontWeight.w700)),
             );

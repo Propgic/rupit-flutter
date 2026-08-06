@@ -57,6 +57,9 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
     final isMgr = auth.hasRole('ORG_ADMIN') || auth.hasRole('MANAGER');
     final isAdmin = auth.hasRole('ORG_ADMIN');
     final correctionEnabled = auth.org?.feature('enableLoanCorrection') == true;
+    // Loan Settings → Loan Detail Actions. On by default; off hides the action here
+    // and the API refuses the close as well.
+    final closeEnabled = auth.org?.allowLoanClose != false;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Loan Details'),
@@ -77,8 +80,7 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                   if (ok) _doAction(() => ref.read(loanRepoProvider).reject(widget.id), 'Loan rejected');
                 }
                 if (v == 'close') {
-                  final ok = await confirmDialog(context, message: 'Close this loan?');
-                  if (ok) _doAction(() => ref.read(loanRepoProvider).close(widget.id), 'Loan closed');
+                  await _openClose();
                 }
                 if (v == 'archive') {
                   final ok = await confirmDialog(context,
@@ -100,7 +102,7 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                   const PopupMenuItem(value: 'correct', child: Text('Correct Terms')),
                 if (isMgr && l['status'] == 'APPROVED') const PopupMenuItem(value: 'disburse', child: Text('Disburse')),
                 if (isMgr && (l['status'] == 'PENDING' || l['status'] == 'APPROVED')) const PopupMenuItem(value: 'reject', child: Text('Reject')),
-                if (isMgr && l['status'] == 'ACTIVE') const PopupMenuItem(value: 'close', child: Text('Close Loan')),
+                if (isMgr && closeEnabled && l['status'] == 'ACTIVE') const PopupMenuItem(value: 'close', child: Text('Close Loan')),
                 if (isMgr && l['archivedAt'] == null && (l['status'] == 'ACTIVE' || l['status'] == 'DEFAULTED'))
                   const PopupMenuItem(value: 'archive', child: Text('Archive')),
                 if (isMgr && l['archivedAt'] != null)
@@ -653,6 +655,10 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
           KeyValueRow(label: 'Waived', value: formatCurrency(l['waiverAmount']), valueColor: AppColors.warning),
           KeyValueRow(label: 'Written Off (Loss)', value: formatCurrency(l['writeOffAmount']), valueColor: AppColors.danger),
           KeyValueRow(label: 'Closed On', value: formatDate(l['closedAt'])),
+          // Absent on loans closed before closedById existed — those are only
+          // attributable from the server access logs.
+          if (l['closedBy']?['name'] != null)
+            KeyValueRow(label: 'Closed By', value: l['closedBy']['name'].toString()),
           if ((l['closureNotes']?.toString() ?? '').isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -675,6 +681,27 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
       builder: (_) => _CorrectTermsSheet(loanId: widget.id, loan: l),
     );
     if (saved == true) {
+      ref.invalidate(loanDetailProvider(widget.id));
+    }
+  }
+
+  // Loads the closure figures first so the sheet can show what is actually owed —
+  // closing a loan with a balance is a decision (settle vs write off), not a
+  // yes/no confirm.
+  Future<void> _openClose() async {
+    Map<String, dynamic> summary;
+    try {
+      summary = await ref.read(loanRepoProvider).closureSummary(widget.id);
+    } on ApiException catch (e) {
+      return showToast(e.message, error: true);
+    }
+    if (!mounted) return;
+    final closed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _CloseLoanSheet(loanId: widget.id, summary: summary),
+    );
+    if (closed == true) {
       ref.invalidate(loanDetailProvider(widget.id));
     }
   }
@@ -775,6 +802,255 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
           ),
         );
       },
+    );
+  }
+}
+
+/// Loan closure form. Mirrors the web "Close Loan" modal.
+///
+/// When dues remain, closing is a decision about money the org is giving up, so the
+/// sheet never picks a destructive default for the operator: Write Off is
+/// pre-selected (it books the shortfall as a loss) and Settlement's waiver starts
+/// EMPTY. It used to be possible on web to open this and confirm straight through,
+/// waiving the entire live balance without typing anything — that produced a run of
+/// wrongly-settled loans. The server enforces the same rule (closeLoan rejects a
+/// SETTLEMENT with no explicit waiverAmount); this is the matching client guard.
+class _CloseLoanSheet extends ConsumerStatefulWidget {
+  final String loanId;
+  final Map<String, dynamic> summary;
+  const _CloseLoanSheet({required this.loanId, required this.summary});
+  @override
+  ConsumerState<_CloseLoanSheet> createState() => _CloseLoanSheetState();
+}
+
+class _CloseLoanSheetState extends ConsumerState<_CloseLoanSheet> {
+  late String _type;
+  final _waiver = TextEditingController();
+  final _notes = TextEditingController();
+  bool _saving = false;
+
+  double get _outstanding => toNum(widget.summary['totalOutstanding']).toDouble();
+  bool get _hasBalance => _outstanding > 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _type = _hasBalance ? 'WRITE_OFF' : 'FULL_PAYMENT';
+    _waiver.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _waiver.dispose();
+    _notes.dispose();
+    super.dispose();
+  }
+
+  /// Mirrors the server-side rule in closeLoan. Returns an error string, or null
+  /// when the entry is usable.
+  String? get _waiverError {
+    if (_type != 'SETTLEMENT' || !_hasBalance) return null;
+    final raw = _waiver.text.trim();
+    if (raw.isEmpty) return 'Enter the amount being waived.';
+    final n = double.tryParse(raw);
+    if (n == null || n < 0) return 'Waiver must be a number of 0 or more.';
+    if (n > _outstanding) return 'Waiver cannot exceed the outstanding of ${formatCurrency(_outstanding)}.';
+    return null;
+  }
+
+  Future<void> _submit() async {
+    if (_waiverError != null) return;
+    setState(() => _saving = true);
+    try {
+      final body = <String, dynamic>{
+        'closureType': _type,
+        if (_type == 'SETTLEMENT') 'waiverAmount': double.tryParse(_waiver.text.trim()),
+        if (_notes.text.trim().isNotEmpty) 'closureNotes': _notes.text.trim(),
+      };
+      await ref.read(loanRepoProvider).close(widget.loanId, body);
+      if (!mounted) return;
+      showToast(_type == 'SETTLEMENT'
+          ? 'Loan settled and closed'
+          : _type == 'WRITE_OFF'
+              ? 'Loan written off and closed'
+              : 'Loan closed');
+      Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      showToast(e.message, error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Widget _figure(String label, dynamic value, {Color? color}) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+          Text(formatCurrency(value), style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: color)),
+        ],
+      );
+
+  Widget _option(String value, String title, String subtitle, Color accent) {
+    final selected = _type == value;
+    return InkWell(
+      onTap: () => setState(() => _type = value),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: selected ? accent.withValues(alpha: 0.08) : null,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: selected ? accent : AppColors.border),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+              size: 20,
+              color: selected ? accent : AppColors.textSecondary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                  Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.summary;
+    final err = _waiverError;
+    final waiverNum = double.tryParse(_waiver.text.trim()) ?? 0;
+    return DraggableScrollableSheet(
+      initialChildSize: 0.9,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (_, ctrl) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: ListView(
+          controller: ctrl,
+          padding: const EdgeInsets.all(16),
+          children: [
+            Row(
+              children: [
+                const Expanded(child: Text('Close Loan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+              ],
+            ),
+            Wrap(spacing: 24, runSpacing: 12, children: [
+              _figure('Total Payable', s['totalPayable']),
+              _figure('Total Recovered', s['totalPaid'], color: AppColors.accent),
+              _figure('Outstanding', s['totalOutstanding'], color: AppColors.danger),
+              _figure('Late Fees', s['totalLateFees'], color: AppColors.warning),
+            ]),
+            const SizedBox(height: 6),
+            Text('EMIs paid ${s['paidEMIs'] ?? 0} / ${s['totalEMIs'] ?? 0}',
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            const SizedBox(height: 14),
+            if (_hasBalance) ...[
+              const Text('Closure Type', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              _option('WRITE_OFF', 'Write Off',
+                  'Write off the entire outstanding as a loss. Loan marked as defaulted.', AppColors.danger),
+              _option('SETTLEMENT', 'Settlement',
+                  'Waive a portion of the outstanding and close. Recorded as a settled loan.', AppColors.primary),
+            ] else
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+                ),
+                child: const Text('All dues are fully paid. This loan will be marked as Closed.',
+                    style: TextStyle(fontSize: 12)),
+              ),
+            if (_type == 'SETTLEMENT' && _hasBalance) ...[
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _waiver,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'Waiver Amount *',
+                  hintText: 'Amount to waive',
+                  prefixText: '₹ ',
+                  errorText: err,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Outstanding: ${formatCurrency(_outstanding)}. '
+                'Customer pays: ${formatCurrency((_outstanding - waiverNum).clamp(0, _outstanding))}',
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              if (err == null && waiverNum >= _outstanding)
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text('This waives the entire outstanding balance — the customer pays nothing further.',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.danger)),
+                ),
+            ],
+            if (_type == 'WRITE_OFF' && _hasBalance) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.danger.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.danger.withValues(alpha: 0.4)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Loss Amount',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.danger)),
+                    Text(formatCurrency(_outstanding),
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.danger)),
+                    const Text('This amount will be recorded as a write-off loss.',
+                        style: TextStyle(fontSize: 11, color: AppColors.danger)),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: _notes,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Closure Notes (optional)',
+                hintText: 'Reason for closure...',
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                onPressed: (_saving || err != null) ? null : _submit,
+                child: _saving
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Text(_type == 'WRITE_OFF'
+                        ? 'Write Off & Close'
+                        : _type == 'SETTLEMENT'
+                            ? 'Settle & Close'
+                            : 'Close Loan'),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -1589,10 +1589,15 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
     }
     final memberOptions = selectable.map((raw) {
       final d = Map<String, dynamic>.from(raw as Map);
+      final hasWon = d['hasWonAuction'] == true;
       return SelectOption<String>(
         value: d['memberId'].toString(),
         label: memberLabel(d),
         searchText: '#${d['ticketNumber']} ${d['customerName'] ?? ''}',
+        // Members who already took their chit are tinted orange, matching the Members
+        // tab above and the dashboard's To-Be-Collected drill-down. The label already
+        // carries "(won)", so the tint is the only cue added here.
+        tileColor: hasWon ? AppColors.orange.withValues(alpha: 0.10) : null,
       );
     }).toList();
     String? selectedMemberLabel;

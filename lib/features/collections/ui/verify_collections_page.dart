@@ -48,6 +48,10 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
   final _searchCtrl = TextEditingController();
   String _search = '';
   Timer? _debounce;
+  // Bulk verify/reject. Ids only, and cleared on every refetch — a selection is only ever
+  // over collections currently on screen, so a search or refresh can't carry a stale one.
+  final Set<String> _selected = {};
+  bool _bulkBusy = false;
 
   @override
   void initState() { super.initState(); _fetch(); }
@@ -68,7 +72,7 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
   }
 
   Future<void> _fetch() async {
-    setState(() => _error = null);
+    setState(() { _error = null; _selected.clear(); });
     try {
       final api = ref.read(apiClientProvider);
       final q = <String, dynamic>{'limit': 200};
@@ -95,6 +99,44 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
     }
   }
 
+  bool get _allSelected => _items.isNotEmpty && _selected.length == _items.length;
+
+  double get _selectedTotal => _items
+      .where((c) => _selected.contains(c['id'].toString()))
+      .fold<double>(0, (s, c) => s + toNum(c['amount']));
+
+  void _toggle(String id) => setState(() {
+    if (!_selected.remove(id)) _selected.add(id);
+  });
+
+  Future<void> _bulkVerify(bool approve) async {
+    final ids = _selected.toList();
+    if (ids.isEmpty) return;
+    final total = formatCurrency(_selectedTotal);
+    final ok = await confirmDialog(
+      context,
+      title: approve ? 'Verify ${ids.length} collections' : 'Reject ${ids.length} collections',
+      message: approve
+          ? 'Verify ${ids.length} collection(s) totalling $total? The amounts are applied to each loan\'s EMIs immediately.'
+          : 'Reject ${ids.length} collection(s) totalling $total?',
+      confirmText: approve ? 'Verify' : 'Reject',
+      destructive: !approve,
+    );
+    if (!ok) return;
+    setState(() => _bulkBusy = true);
+    try {
+      final res = await ref.read(collectionRepoProvider).bulkVerify(ids, approve: approve);
+      // The server reports what it actually applied — anything verified elsewhere in the
+      // meantime is skipped — so show its message rather than claiming all of them went.
+      showToast(res['message']?.toString() ?? (approve ? 'Verified' : 'Rejected'));
+      _fetch();
+    } on ApiException catch (e) {
+      showToast(e.message, error: true);
+    } finally {
+      if (mounted) setState(() => _bulkBusy = false);
+    }
+  }
+
   // Field officers get a read-only self-scoped view (backend scopes the list to their
   // own collections); verify/reject is ORG_ADMIN/MANAGER only, so the action buttons and
   // the "Verify" framing are hidden for them.
@@ -108,7 +150,26 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
             ? 'Verify — ${widget.collectorName}'
             : 'Verify Collections';
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(
+        title: Text(_selected.isEmpty ? title : '${_selected.length} selected'),
+        actions: [
+          if (!_isFieldOfficer && _items.isNotEmpty)
+            IconButton(
+              tooltip: _allSelected ? 'Clear selection' : 'Select all',
+              icon: Icon(_allSelected ? Icons.deselect : Icons.select_all),
+              // Read _allSelected before mutating — it is derived from _selected, so
+              // clearing first would make it always report "not all selected".
+              onPressed: () {
+                final selectAll = !_allSelected;
+                setState(() {
+                  _selected.clear();
+                  if (selectAll) _selected.addAll(_items.map((e) => e['id'].toString()));
+                });
+              },
+            ),
+        ],
+      ),
+      bottomNavigationBar: (_isFieldOfficer || _selected.isEmpty) ? null : _bulkBar(),
       body: _initialLoad
           ? const LoadingView()
           : Column(
@@ -170,6 +231,55 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
     );
   }
 
+  Widget _bulkBar() => SafeArea(
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        border: const Border(top: BorderSide(color: Color(0x1A000000))),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(children: [
+            Expanded(
+              child: Text(
+                '${_selected.length} selected · ${formatCurrency(_selectedTotal)}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            TextButton(
+              onPressed: _bulkBusy ? null : () => setState(_selected.clear),
+              child: const Text('Clear'),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _bulkBusy ? null : () => _bulkVerify(false),
+                icon: const Icon(Icons.close, color: AppColors.danger),
+                label: const Text('Reject', style: TextStyle(color: AppColors.danger)),
+                style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.danger)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _bulkBusy ? null : () => _bulkVerify(true),
+                icon: _bulkBusy
+                    ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.check),
+                label: Text('Verify ${_selected.length}'),
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+              ),
+            ),
+          ]),
+        ],
+      ),
+    ),
+  );
+
   Widget _miniBadge(String label, Color color) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
     decoration: BoxDecoration(
@@ -207,9 +317,25 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
       return s + toNum(m['emiAmount']) + toNum(m['lateFee']) - toNum(m['paidAmount']);
     });
 
+    final id = c['id'].toString();
+    final isSelected = _selected.contains(id);
+
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
-      child: Padding(
+      // Selected rows get a visible border so the bottom bar's count is always traceable
+      // back to specific cards.
+      shape: isSelected
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: AppColors.accent, width: 2),
+            )
+          : null,
+      child: InkWell(
+        // Tapping anywhere on the card toggles selection; the inner gesture detectors
+        // (photo, View Loan / View Chit) still absorb their own taps.
+        onTap: _isFieldOfficer ? null : () => _toggle(id),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -217,6 +343,21 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (!_isFieldOfficer)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 2),
+                    child: SizedBox(
+                      height: 24,
+                      width: 24,
+                      child: Checkbox(
+                        value: isSelected,
+                        onChanged: (_) => _toggle(id),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                if (!_isFieldOfficer) const SizedBox(width: 6),
                 GestureDetector(
                   onTap: () => showImageViewer(context, cust['photo']?.toString()),
                   child: Avatar(
@@ -302,7 +443,9 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
                       style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.danger)),
                 ),
             ]),
-            if (!_isFieldOfficer) ...[
+            // Per-row buttons give way to the bulk bar once a selection is active, so
+            // there's only ever one obvious way to act on what's ticked.
+            if (!_isFieldOfficer && _selected.isEmpty) ...[
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -328,6 +471,7 @@ class _VerifyCollectionsPageState extends ConsumerState<VerifyCollectionsPage> {
             ],
           ],
         ),
+      ),
       ),
     );
   }

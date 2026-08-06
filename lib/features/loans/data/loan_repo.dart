@@ -60,7 +60,15 @@ class LoanRepo {
   Future<void> delete(String id) async => api.delete('/loans/$id');
   Future<void> disburse(String id) async => api.patch('/loans/$id/disburse');
   Future<void> reject(String id) async => api.patch('/loans/$id/reject');
-  Future<void> close(String id) async => api.patch('/loans/$id/close');
+  /// Closes a loan (PATCH /loans/:id/close).
+  ///
+  /// `body` carries the closure decision: `closureType` (FULL_PAYMENT / SETTLEMENT /
+  /// WRITE_OFF), plus `waiverAmount` for a settlement and an optional `closureNotes`.
+  /// A SETTLEMENT without an explicit `waiverAmount` is rejected server-side — the
+  /// amount being forgiven must be named, never inferred. Passing no body only works
+  /// when every due is already paid.
+  Future<void> close(String id, [Map<String, dynamic>? body]) async =>
+      api.patch('/loans/$id/close', data: body ?? const <String, dynamic>{});
 
   /// Archives a loan: hides it from the active book (Outstanding / Overdue /
   /// Amount-in-Market totals) without deleting or closing it. Reversible.
@@ -70,6 +78,9 @@ class LoanRepo {
   /// Restores an archived loan back into the active book.
   Future<void> unarchive(String id) async => api.patch('/loans/$id/unarchive');
 
+  /// Pre-close figures (GET /loans/:id/closure-summary): payable, recovered,
+  /// outstanding, late fees, EMIs paid. Drives the close sheet so the operator sees
+  /// what is actually owed before choosing how to close it.
   Future<Map<String, dynamic>> closureSummary(String id) async {
     final d = await api.get('/loans/$id/closure-summary');
     return Map<String, dynamic>.from(d as Map);

@@ -60,6 +60,9 @@ class AuthOrg {
   // Lets a field officer correct their OWN collection until it's verified. Independent of
   // allowCollectionEdit (which governs admin edits of already-verified collections).
   final bool allowFieldOfficerCollectionEdit;
+  // Shows the "Close Loan" action on loan detail (web: Loan Settings → Loan Detail
+  // Actions). On by default; when off the API refuses the close too.
+  final bool allowLoanClose;
   final String? subscriptionStatus;
   final String? renewalDate;
   final String? billingCycle;
@@ -74,6 +77,7 @@ class AuthOrg {
     this.allowCollectionEdit = false,
     this.verifiedCollectionEditPolicy = 'WINDOW_24H',
     this.allowFieldOfficerCollectionEdit = true,
+    this.allowLoanClose = true,
     this.subscriptionStatus,
     this.renewalDate,
     this.billingCycle,
@@ -100,6 +104,8 @@ class AuthOrg {
       verifiedCollectionEditPolicy: j['verifiedCollectionEditPolicy']?.toString() ?? 'WINDOW_24H',
       // Absent → enabled (backend default is true); only an explicit false disables it.
       allowFieldOfficerCollectionEdit: j['allowFieldOfficerCollectionEdit'] != false,
+      // Absent → enabled (backend default is true); only an explicit false disables it.
+      allowLoanClose: j['allowLoanClose'] != false,
       subscriptionStatus: j['subscriptionStatus']?.toString(),
       renewalDate: j['renewalDate']?.toString(),
       billingCycle: j['billingCycle']?.toString(),
@@ -116,6 +122,7 @@ class AuthOrg {
         'allowCollectionEdit': allowCollectionEdit,
         'verifiedCollectionEditPolicy': verifiedCollectionEditPolicy,
         'allowFieldOfficerCollectionEdit': allowFieldOfficerCollectionEdit,
+        'allowLoanClose': allowLoanClose,
         'subscriptionStatus': subscriptionStatus,
         'renewalDate': renewalDate,
         'billingCycle': billingCycle,
@@ -140,6 +147,7 @@ class AuthOrg {
         allowCollectionEdit: allowCollectionEdit ?? this.allowCollectionEdit,
         verifiedCollectionEditPolicy: verifiedCollectionEditPolicy ?? this.verifiedCollectionEditPolicy,
         allowFieldOfficerCollectionEdit: allowFieldOfficerCollectionEdit ?? this.allowFieldOfficerCollectionEdit,
+        allowLoanClose: allowLoanClose,
         subscriptionStatus: subscriptionStatus,
         renewalDate: renewalDate,
         billingCycle: billingCycle,

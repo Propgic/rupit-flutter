@@ -277,12 +277,15 @@ class _ImageViewerPage extends StatelessWidget {
 // is what the search box matches against (defaults to the label when omitted, so pass
 // the raw name/number here when the label carries extra formatting like "— ₹x due").
 // [trailing] renders on the right of the row (e.g. a StatusChip) before the check mark.
+// [tileColor] tints the whole row, flagging a state that matters while picking (e.g. a
+// chit member who has already won their auction).
 class SelectOption<T> {
   final T value;
   final String label;
   final String searchText;
   final Widget? trailing;
-  SelectOption({required this.value, required this.label, String? searchText, this.trailing})
+  final Color? tileColor;
+  SelectOption({required this.value, required this.label, String? searchText, this.trailing, this.tileColor})
       : searchText = (searchText ?? label).toLowerCase();
 }
 
@@ -376,6 +379,7 @@ class _SearchableSelectSheetState<T> extends State<_SearchableSelectSheet<T>> {
                         final o = filtered[i];
                         final isSel = o.value == widget.selected;
                         return ListTile(
+                          tileColor: o.tileColor,
                           title: Text(o.label, overflow: TextOverflow.ellipsis),
                           trailing: (o.trailing == null && !isSel)
                               ? null
