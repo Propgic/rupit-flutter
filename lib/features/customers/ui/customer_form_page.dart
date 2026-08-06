@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../../core/api/api_client.dart';
+import '../../../core/auth/auth_controller.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
+import '../../team/data/team_repo.dart';
 import '../data/customer_repo.dart';
 
 class CustomerFormPage extends ConsumerStatefulWidget {
@@ -26,6 +28,10 @@ class _CustomerFormPageState extends ConsumerState<CustomerFormPage> {
     ]) k: TextEditingController(),
   };
   String _gender = 'MALE';
+  // Field officers only see customers assigned to them, so admins/managers pick
+  // the agent here; officers can't change it (the server ignores it from them).
+  String? _assignedToId;
+  List<Map<String, dynamic>> _agents = [];
   DateTime? _dob;
   // Server-side validation error for the phone field (e.g. a 409 duplicate mobile),
   // surfaced inline under the field in addition to the toast. Cleared on edit.
@@ -39,10 +45,31 @@ class _CustomerFormPageState extends ConsumerState<CustomerFormPage> {
   bool _loading = false;
   bool _saving = false;
 
+  bool get _canAssign {
+    final role = ref.read(authProvider).user?.role;
+    return role == 'ORG_ADMIN' || role == 'MANAGER';
+  }
+
   @override
   void initState() {
     super.initState();
+    if (_canAssign) _loadAgents();
     if (widget.id != null) _load();
+  }
+
+  Future<void> _loadAgents() async {
+    try {
+      final members = await ref.read(teamRepoProvider).list(limit: 500);
+      if (!mounted) return;
+      setState(() {
+        _agents = members
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .where((m) => m['isActive'] == true)
+            .toList();
+      });
+    } catch (_) {
+      // Assignment is optional on the form; a failed team fetch shouldn't block saving.
+    }
   }
 
   Future<void> _load() async {
@@ -51,6 +78,7 @@ class _CustomerFormPageState extends ConsumerState<CustomerFormPage> {
       final c = await ref.read(customerRepoProvider).get(widget.id!);
       _c.forEach((k, ctrl) => ctrl.text = c[k]?.toString() ?? '');
       _gender = c['gender']?.toString() ?? 'MALE';
+      _assignedToId = c['assignedToId']?.toString();
       _dob = tryParseDate(c['dateOfBirth']?.toString());
       _existingPhotoUrl = c['photo']?.toString();
       _existingIntroducerPhotoUrl = c['introducerPhoto']?.toString();
@@ -79,6 +107,9 @@ class _CustomerFormPageState extends ConsumerState<CustomerFormPage> {
       final body = <String, dynamic>{
         'gender': _gender,
         if (_dob != null) 'dateOfBirth': formatInputDate(_dob!),
+        // Sent even when empty so an admin can clear the assignment; '' becomes
+        // null server-side. Officers never send it — the server drops it anyway.
+        if (_canAssign) 'assignedToId': _assignedToId ?? '',
       };
       _c.forEach((k, ctrl) {
         final v = ctrl.text.trim();
@@ -305,6 +336,24 @@ class _CustomerFormPageState extends ConsumerState<CustomerFormPage> {
                     return null;
                   }),
                   _text('verifiedBy', 'Verified By'),
+                  if (_canAssign) ...[
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String?>(
+                      initialValue: _agents.any((a) => a['id'] == _assignedToId) ? _assignedToId : null,
+                      decoration: const InputDecoration(
+                        labelText: 'Assigned Agent',
+                        helperText: 'Only this agent sees the customer in the field app',
+                      ),
+                      items: [
+                        const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+                        ..._agents.map((a) => DropdownMenuItem<String?>(
+                              value: a['id']?.toString(),
+                              child: Text(a['name']?.toString() ?? '—'),
+                            )),
+                      ],
+                      onChanged: (v) => setState(() => _assignedToId = v),
+                    ),
+                  ],
                 ],
               ),
             ),

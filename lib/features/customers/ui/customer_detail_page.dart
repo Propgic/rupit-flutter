@@ -290,6 +290,12 @@ class _CustomerDetailPageState extends ConsumerState<CustomerDetailPage> with Si
               KeyValueRow(label: 'Email', value: c['email']?.toString() ?? '-'),
               KeyValueRow(label: 'Aadhaar', value: c['aadhaarNumber']?.toString() ?? '-'),
               KeyValueRow(label: 'PAN', value: c['panNumber']?.toString() ?? '-'),
+              // The agent this customer belongs to — and the only field officer
+              // who can see them in the app.
+              KeyValueRow(
+                label: 'Assigned Agent',
+                value: (c['assignedTo'] is Map ? c['assignedTo']['name']?.toString() : null) ?? 'Unassigned',
+              ),
             ],
           ),
         ),
