@@ -36,18 +36,28 @@ android {
         versionName = flutter.versionName
     }
 
+    // The release signing config only exists when android/key.properties does
+    // (it is gitignored, so it is absent on any machine that only builds debug).
+    // Creating it unconditionally cast null to String at CONFIGURATION time,
+    // which failed every build — including `flutter build apk --debug` and
+    // `flutter run` — not just release ones.
     signingConfigs {
-        create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["keyPassword"] as String
-            storeFile = keystoreProperties["storeFile"]?.let { file(it as String) }
-            storePassword = keystoreProperties["storePassword"] as String
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = keystoreProperties["storeFile"]?.let { file(it as String) }
+                storePassword = keystoreProperties["storePassword"] as String
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            // Null when the keystore is absent: the release APK is then left
+            // UNSIGNED (the build stops before producing a shippable artifact)
+            // rather than silently falling back to the debug key.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 }

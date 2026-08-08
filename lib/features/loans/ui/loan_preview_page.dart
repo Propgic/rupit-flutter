@@ -52,7 +52,27 @@ LoanPreview computeLoanPreview({
   required double rate,
   required int tenure,
   required double processingFee,
+  bool accrual = false,
 }) {
+  // Traditional accrual (khata) loan: rate is % per MONTH on the full principal,
+  // added to the balance each month — no EMIs, no term, nothing pre-booked.
+  if (accrual) {
+    final monthlyInterest = _r2(amount * rate / 100);
+    return LoanPreview(
+      principal: amount,
+      totalInterest: 0,
+      processingFee: processingFee,
+      netDisbursed: _r2(amount - processingFee),
+      totalPayable: amount,
+      emiAmount: monthlyInterest,
+      tenure: 0,
+      unitWord: 'month',
+      upfront: false,
+      upfrontInterest: 0,
+      rateSuffix: ' / month (khata accrual)',
+      installmentLabel: 'Monthly Interest',
+    );
+  }
   final isDailyType = loanType == 'DAILY' || loanType == 'WEEKLY';
   final isPeriod = !isDailyType && (tenureType == 'WEEKS' || tenureType == 'DAYS');
   final n = tenure < 1 ? 1 : tenure;
@@ -178,6 +198,8 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
   // retrying after a partial failure never books the same loan twice.
   late final List<Map<String, dynamic>> _pending = [...widget.customers];
 
+  bool get _accrual => widget.body['interestAccrual'] == true;
+
   DateTime get _endDate {
     final p = widget.preview;
     final s = widget.startDate;
@@ -239,13 +261,24 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
                   KeyValueRow(label: 'Assigned To', value: widget.assigneeLabel!),
                 KeyValueRow(label: 'Principal', value: formatCurrency(p.principal)),
                 KeyValueRow(label: 'Interest Rate', value: '${widget.rateText}%${p.rateSuffix}'),
-                KeyValueRow(label: 'Tenure', value: '${p.tenure} ${p.unitWord}${p.tenure == 1 ? '' : 's'}'),
-                KeyValueRow(label: 'Start Date', value: formatDate(widget.startDate.toIso8601String())),
-                KeyValueRow(label: 'End Date', value: formatDate(_endDate.toIso8601String())),
+                // Khata accrual loans are open-ended — no term, no end date, and
+                // no interest is pre-booked (it accrues month by month).
                 KeyValueRow(
-                  label: p.upfront ? 'Upfront Interest (deducted)' : 'Total Interest',
-                  value: formatCurrency(p.totalInterest),
-                ),
+                    label: 'Tenure',
+                    value: _accrual
+                        ? 'Open-ended (interest monthly)'
+                        : '${p.tenure} ${p.unitWord}${p.tenure == 1 ? '' : 's'}'),
+                KeyValueRow(label: 'Start Date', value: formatDate(widget.startDate.toIso8601String())),
+                KeyValueRow(
+                    label: _accrual ? 'Interest From' : 'End Date',
+                    value: _accrual
+                        ? formatDate(DateTime(widget.startDate.year, widget.startDate.month + 1, 1).toIso8601String())
+                        : formatDate(_endDate.toIso8601String())),
+                if (!_accrual)
+                  KeyValueRow(
+                    label: p.upfront ? 'Upfront Interest (deducted)' : 'Total Interest',
+                    value: formatCurrency(p.totalInterest),
+                  ),
                 // ALR rides along informationally — it is not part of the disbursement math.
                 if ((double.tryParse(widget.body['alr']?.toString() ?? '') ?? 0) > 0)
                   KeyValueRow(label: 'ALR', value: widget.body['alr'].toString()),

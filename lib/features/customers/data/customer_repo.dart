@@ -148,6 +148,32 @@ class CustomerRepo {
     final res = await api.raw(() => api.dio.get('/customers/consolidated-balances', queryParameters: params));
     return Map<String, dynamic>.from(res.data as Map);
   }
+
+  /// Full khata statement: every balance-affecting event across chits and loans
+  /// with a running balance. Backend: GET /customers/:id/sheet-statement.
+  /// Returns { customer, rows, closingBalance }.
+  Future<Map<String, dynamic>> sheetStatement(String id) async {
+    final d = await api.get('/customers/$id/sheet-statement');
+    return Map<String, dynamic>.from(d as Map);
+  }
+
+  /// The balance sheet's "P A" — receive a lump payment, auto-allocated across
+  /// the customer's chit dues then loan dues (ORG_ADMIN/MANAGER only).
+  /// Backend: POST /customers/:id/sheet-payment { amount, paymentMode }.
+  /// Returns { received, allocations, receipts }.
+  Future<Map<String, dynamic>> sheetPayment(String id, num amount, {String paymentMode = 'CASH'}) async {
+    final d = await api.post('/customers/$id/sheet-payment', data: {'amount': amount, 'paymentMode': paymentMode});
+    return Map<String, dynamic>.from(d as Map);
+  }
+
+  /// The balance sheet's "I A" — issue cash against the customer's PENDING
+  /// auction payouts, oldest first (partial settles split the payout).
+  /// Backend: POST /customers/:id/sheet-issue { amount, paymentMode }.
+  /// Returns { issued, settled }.
+  Future<Map<String, dynamic>> sheetIssue(String id, num amount, {String paymentMode = 'CASH'}) async {
+    final d = await api.post('/customers/$id/sheet-issue', data: {'amount': amount, 'paymentMode': paymentMode});
+    return Map<String, dynamic>.from(d as Map);
+  }
 }
 
 final customerRepoProvider = Provider<CustomerRepo>((ref) => CustomerRepo(ref.read(apiClientProvider)));

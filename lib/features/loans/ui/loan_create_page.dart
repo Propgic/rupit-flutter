@@ -26,6 +26,10 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   String _tenureType = 'MONTHS';
   String _interestType = 'REDUCING';
   bool _deductUpfront = false;
+  // Traditional accrual (khata) loan: no EMIs — principal owed from disbursement
+  // and simple monthly interest (rate % per MONTH) added to the balance as each
+  // month arrives. Offered only to khata-mode orgs.
+  bool _accrual = false;
   DateTime _startDate = DateTime.now();
   final _principal = TextEditingController();
   final _rate = TextEditingController();
@@ -70,12 +74,15 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   bool get _isGroupLoan => _loanType == 'GROUP';
 
   // DAILY/WEEKLY loan TYPES are fixed flat-upfront — the method picker is only for term loans.
-  bool get _showInterestMethod => _loanType != 'DAILY' && _loanType != 'WEEKLY';
+  bool get _showInterestMethod => _loanType != 'DAILY' && _loanType != 'WEEKLY' && !_accrual;
+  // Accrual is a term-loan-only shape (DAILY/WEEKLY types are fixed flat-upfront).
+  bool get _canAccrue => _loanType != 'DAILY' && _loanType != 'WEEKLY';
   // Sub-monthly cadence (tenure counted in weeks/days) chosen via the tenure Unit dropdown.
   bool get _isPeriodUnit => _tenureType == 'WEEKS' || _tenureType == 'DAYS';
   String get _periodWord => _tenureType == 'WEEKS' ? 'week' : 'day';
 
   String get _rateLabel {
+    if (_accrual) return 'Interest Rate (% per month) *';
     if (!_showInterestMethod) return 'Flat Interest Rate (% on principal) *';
     if (_isPeriodUnit && _interestType == 'REDUCING') return 'Interest Rate (% per month) *';
     if (_isPeriodUnit) return 'Flat Interest Rate (% on principal) *';
@@ -289,8 +296,11 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       'loanType': _loanType,
       'principalAmount': double.tryParse(_principal.text),
       'interestRate': double.tryParse(_rate.text),
-      'tenure': int.tryParse(_tenure.text),
-      'tenureType': _tenureType,
+      // Accrual loans are open-ended; the backend stores tenure 1 and appends
+      // interest rows monthly via the accrual job.
+      'tenure': _accrual ? 1 : int.tryParse(_tenure.text),
+      'tenureType': _accrual ? 'MONTHS' : _tenureType,
+      if (_accrual) 'interestAccrual': true,
       // Interest method (DAILY/WEEKLY types are normalized to flat-upfront by the backend).
       if (_showInterestMethod) 'interestType': _interestType,
       if (_showInterestMethod) 'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
@@ -329,6 +339,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       rate: double.tryParse(_rate.text) ?? 0,
       tenure: int.tryParse(_tenure.text) ?? 1,
       processingFee: double.tryParse(_fee.text) ?? 0,
+      accrual: _accrual,
     );
 
     if (!mounted) return;
@@ -457,6 +468,27 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                     decoration: const InputDecoration(labelText: 'Principal Amount *', prefixText: '₹ '),
                     validator: (v) => (double.tryParse(v ?? '') ?? 0) > 0 ? null : 'Required',
                   ),
+                  // Repayment shape — khata-mode orgs can book a traditional
+                  // accrual loan (no EMIs) instead of an installment loan.
+                  if (_canAccrue && ref.watch(authProvider).org?.khataCollectionMode == true) ...[
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<bool>(
+                      initialValue: _accrual,
+                      decoration: const InputDecoration(labelText: 'Repayment Mode'),
+                      items: const [
+                        DropdownMenuItem(value: false, child: Text('EMI installments')),
+                        DropdownMenuItem(value: true, child: Text('Monthly interest (khata)')),
+                      ],
+                      onChanged: (v) => setState(() {
+                        _accrual = v ?? false;
+                        if (_accrual) {
+                          _tenureType = 'MONTHS';
+                          _deductUpfront = false;
+                          _interestType = 'FLAT';
+                        }
+                      }),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   TextFormField(
                     controller: _rate,
@@ -465,6 +497,23 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                     validator: (v) => double.tryParse(v ?? '') != null ? null : 'Required',
                   ),
                   const SizedBox(height: 10),
+                  // Khata (accrual) loans are open-ended — no tenure/unit to pick.
+                  if (_accrual)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.primarySoft,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        'Traditional khata loan. The full principal is owed from disbursement; '
+                        'simple monthly interest (rate% × principal) is added to the balance when '
+                        'each month arrives. Collections and adjustments flow through the balance sheet.',
+                        style: TextStyle(fontSize: 12.5, color: AppColors.primaryDark),
+                      ),
+                    )
+                  else
                   Row(
                     children: [
                       Expanded(

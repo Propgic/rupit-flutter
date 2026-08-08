@@ -59,6 +59,8 @@ import '../../features/settings/ui/settings_page.dart';
 import '../../features/settings/ui/roles_permissions_page.dart';
 import '../../features/collections/ui/collection_map_page.dart';
 import '../../features/customers/ui/consolidated_balance_page.dart';
+import '../../features/customers/ui/customer_statement_page.dart';
+import '../../features/customers/ui/khata_collection_page.dart';
 import '../../features/chitfunds/ui/chitfund_auction_detail_page.dart';
 import '../../features/expenses/ui/team_salaries_page.dart';
 import '../../features/search/ui/search_page.dart';
@@ -172,6 +174,8 @@ final routerProvider = Provider<GoRouter>((ref) {
 
           GoRoute(path: '/search', builder: (_, __) => const SearchPage()),
           GoRoute(path: '/consolidated-balance', builder: (_, __) => const ConsolidatedBalanceSheetPage()),
+          GoRoute(path: '/consolidated-balance/:id', builder: (_, s) => CustomerStatementPage(customerId: s.pathParameters['id']!)),
+          GoRoute(path: '/khata-collection', builder: (_, __) => const KhataCollectionPage()),
         ],
       ),
     ],
