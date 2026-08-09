@@ -268,8 +268,32 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
       builder: (_) => _CustPicker(ref: ref),
     );
     if (picked == null) return;
+    // Half (0.5-share) tickets: two customers split one ticket — each added as
+    // their own member with a ½ share (org-gated). Auction pots still pay full.
+    num share = 1;
+    final allowHalf = ref.read(authProvider).org?.allowChitHalfTickets == true;
+    if (allowHalf && mounted) {
+      final pickedShare = await showDialog<num>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Ticket Share'),
+          content: const Text(
+            'Half tickets split one ticket between two customers — add each '
+            'co-holder separately with a ½ share. They pay half the installment '
+            'and get half the dividend; an auction win still pays the full pot.',
+            style: TextStyle(fontSize: 13),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Full ticket')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, 0.5), child: const Text('½ Half ticket')),
+          ],
+        ),
+      );
+      if (pickedShare == null) return;
+      share = pickedShare;
+    }
     try {
-      await ref.read(chitfundRepoProvider).addMember(widget.id, picked['id'].toString());
+      await ref.read(chitfundRepoProvider).addMember(widget.id, picked['id'].toString(), shareFraction: share);
       ref.invalidate(chitfundMembersProvider(widget.id));
       ref.invalidate(chitfundDetailProvider(widget.id));
       showToast('Member added');
@@ -519,6 +543,11 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
                 title: Row(
                   children: [
                     Expanded(child: Text('#${mem['ticketNumber'] ?? '-'} ${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim())),
+                    // Half-ticket badge (shareFraction 0.5): billed half, half dividend.
+                    if (toNum(mem['shareFraction']) == 0.5) ...[
+                      const SizedBox(width: 6),
+                      const StatusChip(label: '½ ticket', color: AppColors.info),
+                    ],
                     if (holdingTag != null) ...[
                       const SizedBox(width: 6),
                       StatusChip(label: holdingTag, color: AppColors.purple),
@@ -667,7 +696,8 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
                     items: eligible.map((m) {
                       final mm = Map<String, dynamic>.from(m as Map);
                       final cust = Map<String, dynamic>.from(mm['customer'] ?? {});
-                      return DropdownMenuItem(value: mm, child: Text('#${mm['ticketNumber']} ${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim()));
+                      final half = toNum(mm['shareFraction']) == 0.5 ? ' (½)' : '';
+                      return DropdownMenuItem(value: mm, child: Text('#${mm['ticketNumber']}$half ${cust['firstName'] ?? ''} ${cust['lastName'] ?? ''}'.trim()));
                     }).toList(),
                     onChanged: (v) => setState(() => selected = v),
                   ),
@@ -1117,7 +1147,13 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
     DateTime paidDate = DateTime.now();
 
     // Look up the winner's expected share for the month + whether collection already exists.
-    num shareExpected = toNum(c['monthlyInstallment']);
+    // Fallback is share-scaled so a half-ticket winner isn't asked for a full
+    // installment when the dues lookup below can't resolve their row.
+    final winnerMember = (ref.read(chitfundMembersProvider(widget.id)).value ?? const [])
+        .cast<Map?>()
+        .firstWhere((m) => m?['id']?.toString() == po['chitfundMemberId']?.toString(), orElse: () => null);
+    final winnerShare = winnerMember == null ? 1 : (toNum(winnerMember['shareFraction']) == 0.5 ? 0.5 : 1);
+    num shareExpected = toNum(c['monthlyInstallment']) * winnerShare;
     bool shareAlreadyPaid = false;
     try {
       final dues = await ref.read(chitfundRepoProvider).monthlyDues(widget.id, toNum(po['monthNumber']).toInt());
@@ -1582,7 +1618,9 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
     // amount suffix doesn't get in the way of matching what the collector types.
     String memberLabel(Map<String, dynamic> d) {
       final paid = _paidForDue(d);
-      final nm = '#${d['ticketNumber']} ${d['customerName'] ?? 'Member'}${d['hasWonAuction'] == true ? ' (won)' : ''}';
+      // Half tickets are flagged; their expectedAmount is already share-scaled.
+      final half = toNum(d['shareFraction']) == 0.5 ? ' (½)' : '';
+      final nm = '#${d['ticketNumber']}$half ${d['customerName'] ?? 'Member'}${d['hasWonAuction'] == true ? ' (won)' : ''}';
       return paid > 0
           ? '$nm — ${formatCurrency(remainingFor(d))} due (paid ${formatCurrency(paid)} of ${formatCurrency(d['expectedAmount'])})'
           : '$nm — ${formatCurrency(d['expectedAmount'])}';
@@ -1906,7 +1944,9 @@ class _MemberTransactionsSheetState extends ConsumerState<_MemberTransactionsShe
           children: [
             Row(children: [
               Expanded(
-                child: Text('#${m['ticketNumber'] ?? '-'} ${name.isEmpty ? 'Member' : name} — Transactions',
+                child: Text(
+                    '#${m['ticketNumber'] ?? '-'}${toNum(m['shareFraction']) == 0.5 ? ' (½)' : ''} '
+                    '${name.isEmpty ? 'Member' : name} — Transactions',
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
               ),
               IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),

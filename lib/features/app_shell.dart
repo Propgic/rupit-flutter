@@ -64,12 +64,23 @@ class AppDrawer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authProvider);
+    // Khata mode swaps the Collections destination to the khata counter screen
+    // (customer → consolidated balance → lump receipt) for admins/managers;
+    // field officers always keep the collections list.
+    final khataMode = auth.org?.khataCollectionMode == true &&
+        auth.org?.feature('enableConsolidatedBalance') == true &&
+        (auth.hasRole('ORG_ADMIN') || auth.hasRole('MANAGER'));
     final items = _navItems.where((it) {
       if (it.featureAny != null && !it.featureAny!.any((f) => auth.org?.feature(f) == true)) return false;
       if (it.featureFlag != null && auth.org?.feature(it.featureFlag!) != true) return false;
       if (it.permission != null && !auth.hasPermission(it.permission!)) return false;
       if (it.role != null && !auth.hasRole(it.role!)) return false;
       return true;
+    }).map((it) {
+      if (khataMode && it.route == '/collections') {
+        return const NavItem('Khata Collection', Icons.point_of_sale_outlined, '/khata-collection');
+      }
+      return it;
     }).toList();
     final location = GoRouter.of(context).routeInformationProvider.value.uri.path;
 

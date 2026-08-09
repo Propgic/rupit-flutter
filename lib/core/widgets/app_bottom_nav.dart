@@ -20,10 +20,20 @@ class AppBottomNav extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authProvider);
+    // Khata mode: the Collections tab opens the khata counter for admins/managers
+    // (mirrors the drawer swap); field officers keep the collections list.
+    final khataMode = auth.org?.khataCollectionMode == true &&
+        auth.org?.feature('enableConsolidatedBalance') == true &&
+        (auth.hasRole('ORG_ADMIN') || auth.hasRole('MANAGER'));
     final items = _items.where((it) {
       if (it.$5 != null && auth.org?.feature(it.$5!) != true) return false;
       if (it.$6 != null && !auth.hasPermission(it.$6!)) return false;
       return true;
+    }).map((it) {
+      if (khataMode && it.$1 == '/collections') {
+        return ('/khata-collection', Icons.point_of_sale_outlined, Icons.point_of_sale, 'Khata', it.$5, it.$6);
+      }
+      return it;
     }).toList();
 
     final location = GoRouter.of(context).routeInformationProvider.value.uri.path;

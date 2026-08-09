@@ -63,6 +63,13 @@ class AuthOrg {
   // Shows the "Close Loan" action on loan detail (web: Loan Settings → Loan Detail
   // Actions). On by default; when off the API refuses the close too.
   final bool allowLoanClose;
+  // Half (0.5-share) chit tickets: two customers splitting one ticket. Gates the
+  // share choice when adding a chit member; off by default.
+  final bool allowChitHalfTickets;
+  // Khata Collection mode: the Collections menu (admins/managers) opens the
+  // khata counter — customer → consolidated balance → lump receipt — instead of
+  // the collections list. Off by default.
+  final bool khataCollectionMode;
   final String? subscriptionStatus;
   final String? renewalDate;
   final String? billingCycle;
@@ -78,6 +85,8 @@ class AuthOrg {
     this.verifiedCollectionEditPolicy = 'WINDOW_24H',
     this.allowFieldOfficerCollectionEdit = true,
     this.allowLoanClose = true,
+    this.allowChitHalfTickets = false,
+    this.khataCollectionMode = false,
     this.subscriptionStatus,
     this.renewalDate,
     this.billingCycle,
@@ -106,6 +115,9 @@ class AuthOrg {
       allowFieldOfficerCollectionEdit: j['allowFieldOfficerCollectionEdit'] != false,
       // Absent → enabled (backend default is true); only an explicit false disables it.
       allowLoanClose: j['allowLoanClose'] != false,
+      // Both default-false server-side: only an explicit true enables them.
+      allowChitHalfTickets: j['allowChitHalfTickets'] == true,
+      khataCollectionMode: j['khataCollectionMode'] == true,
       subscriptionStatus: j['subscriptionStatus']?.toString(),
       renewalDate: j['renewalDate']?.toString(),
       billingCycle: j['billingCycle']?.toString(),
@@ -123,6 +135,8 @@ class AuthOrg {
         'verifiedCollectionEditPolicy': verifiedCollectionEditPolicy,
         'allowFieldOfficerCollectionEdit': allowFieldOfficerCollectionEdit,
         'allowLoanClose': allowLoanClose,
+        'allowChitHalfTickets': allowChitHalfTickets,
+        'khataCollectionMode': khataCollectionMode,
         'subscriptionStatus': subscriptionStatus,
         'renewalDate': renewalDate,
         'billingCycle': billingCycle,
@@ -148,6 +162,8 @@ class AuthOrg {
         verifiedCollectionEditPolicy: verifiedCollectionEditPolicy ?? this.verifiedCollectionEditPolicy,
         allowFieldOfficerCollectionEdit: allowFieldOfficerCollectionEdit ?? this.allowFieldOfficerCollectionEdit,
         allowLoanClose: allowLoanClose,
+        allowChitHalfTickets: allowChitHalfTickets,
+        khataCollectionMode: khataCollectionMode,
         subscriptionStatus: subscriptionStatus,
         renewalDate: renewalDate,
         billingCycle: billingCycle,

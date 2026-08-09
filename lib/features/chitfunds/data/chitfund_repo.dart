@@ -33,7 +33,10 @@ class ChitfundRepo {
     return const [];
   }
 
-  Future<void> addMember(String id, String customerId) async => api.post('/chitfunds/$id/members', data: {'customerId': customerId});
+  /// `shareFraction`: 1 (full ticket) or 0.5 (half ticket — two customers
+  /// splitting one ticket; gated by OrgSettings.allowChitHalfTickets).
+  Future<void> addMember(String id, String customerId, {num shareFraction = 1}) async =>
+      api.post('/chitfunds/$id/members', data: {'customerId': customerId, 'shareFraction': shareFraction});
   Future<void> removeMember(String id, String memberId) async => api.delete('/chitfunds/$id/members/$memberId');
 
   Future<List<dynamic>> auctions(String id) async {

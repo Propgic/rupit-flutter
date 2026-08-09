@@ -65,7 +65,12 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
         title: const Text('Loan Details'),
         bottom: TabBar(
           controller: _tabs,
-          tabs: const [Tab(text: 'Details'), Tab(text: 'Collections'), Tab(text: 'EMI Schedule')],
+          // Accrual (khata) loans have no EMIs — the schedule is an account ledger.
+          tabs: [
+            const Tab(text: 'Details'),
+            const Tab(text: 'Collections'),
+            Tab(text: data.asData?.value['interestAccrual'] == true ? 'Account Ledger' : 'EMI Schedule'),
+          ],
         ),
         actions: [
           data.maybeWhen(
@@ -144,6 +149,11 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
   Widget _infoTab(Map<String, dynamic> l) {
     final c = Map<String, dynamic>.from(l['customer'] ?? {});
     final assignee = Map<String, dynamic>.from(l['assignedTo'] ?? {});
+    // Traditional accrual (khata) loan: no EMIs — the whole principal is owed
+    // from disbursement and simple monthly interest is added to the balance as
+    // each month arrives. The schedule rows are an account ledger, so every EMI
+    // label/figure below switches presentation.
+    final accrual = l['interestAccrual'] == true;
 
     // Payment overview: group Overdue, Due Amount and Total Due Payable together so the
     // amount the customer must pay now is never confused with individual figures.
@@ -162,10 +172,12 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
     final overviewCards = <Widget>[];
     if (showOverdue) {
       overviewCards.add(_amountCard(
-        label: 'Overdue',
+        label: accrual ? 'Outstanding Balance' : 'Overdue',
         value: formatCurrency(l['overdueAmount']),
         color: AppColors.danger,
-        subtitle: '${overdueEmis.toInt()} installment${overdueEmis > 1 ? 's' : ''} overdue',
+        subtitle: accrual
+            ? 'Principal + interest accrued to date, less payments'
+            : '${overdueEmis.toInt()} installment${overdueEmis > 1 ? 's' : ''} overdue',
       ));
     }
     if (showDue) {
@@ -173,19 +185,38 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
         label: 'Due Amount',
         value: formatCurrency(dueAmount),
         color: AppColors.warning,
-        subtitle: nextEmi.isEmpty ? null : 'EMI #${nextEmi['emiNumber']} · ${formatDate(nextEmi['dueDate'])}',
+        subtitle: nextEmi.isEmpty
+            ? null
+            : accrual
+                ? 'Interest · ${formatDate(nextEmi['dueDate'])}'
+                : 'EMI #${nextEmi['emiNumber']} · ${formatDate(nextEmi['dueDate'])}',
       ));
     }
     overviewCards.add(_amountCard(
-      label: 'Total Due Payable',
+      label: accrual ? 'Balance to Date' : 'Total Due Payable',
       value: formatCurrency(totalDuePayable),
       color: AppColors.primary,
-      subtitle: 'Currently due + overdue',
+      subtitle: accrual ? 'Payable/adjustable any time via the balance sheet' : 'Currently due + overdue',
     ));
 
     return ListView(
       padding: _tabPadding(l, 14),
       children: [
+        if (accrual)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.primarySoft,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              'Traditional accrual loan. The full principal is owed from disbursement and '
+              'simple monthly interest (${formatCurrency(l['emiAmount'])}/month) is added to the '
+              'balance — there are no EMIs. Collected or adjusted through the balance sheet.',
+              style: const TextStyle(fontSize: 12.5, color: AppColors.primaryDark),
+            ),
+          ),
         if (l['archivedAt'] != null)
           Container(
             margin: const EdgeInsets.only(bottom: 12),
@@ -319,17 +350,27 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
               KeyValueRow(label: 'Principal', value: formatCurrency(l['principalAmount'])),
               if (!loanFieldHidden(l, 'interestRate'))
                 KeyValueRow(label: 'Interest Rate', value: _interestRateLabel(l)),
-              KeyValueRow(label: 'Tenure', value: '${l['tenure'] ?? ''} ${l['tenureType'] ?? ''}'),
-              KeyValueRow(label: l['loanType'] == 'DAILY' ? 'Daily Installment' : 'EMI', value: formatCurrency(l['emiAmount'])),
+              KeyValueRow(
+                  label: 'Tenure',
+                  value: accrual ? 'Open-ended (accrual)' : '${l['tenure'] ?? ''} ${l['tenureType'] ?? ''}'),
+              KeyValueRow(
+                  label: accrual
+                      ? 'Monthly Interest'
+                      : l['loanType'] == 'DAILY'
+                          ? 'Daily Installment'
+                          : 'EMI',
+                  value: formatCurrency(l['emiAmount'])),
               if (!loanFieldHidden(l, 'totalPayable'))
-                KeyValueRow(label: 'Total Payable', value: formatCurrency(l['totalPayable'])),
+                KeyValueRow(
+                    label: accrual ? 'Total Charged to Date' : 'Total Payable',
+                    value: formatCurrency(l['totalPayable'])),
               if (!loanFieldHidden(l, 'processingFee'))
                 KeyValueRow(label: 'Processing Fee', value: formatCurrency(l['processingFee'])),
               if (l['alr'] != null && (double.tryParse(l['alr'].toString()) ?? 0) > 0)
                 KeyValueRow(label: 'ALR', value: l['alr'].toString()),
               KeyValueRow(label: 'Start Date', value: formatDate(l['startDate'])),
               KeyValueRow(label: 'Disbursed', value: formatDate(l['disbursedDate'])),
-              KeyValueRow(label: 'End Date', value: formatDate(l['endDate'])),
+              KeyValueRow(label: accrual ? 'Interest Charged Through' : 'End Date', value: formatDate(l['endDate'])),
               if (l['disbursedDate'] != null)
                 KeyValueRow(
                   label: 'Day',
@@ -767,7 +808,8 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
   // Total Interest), plus paid amount and status.
   Widget _emiTab(Map<String, dynamic> l) {
     final items = (l['emiSchedule'] is List) ? List<dynamic>.from(l['emiSchedule'] as List) : const <dynamic>[];
-    if (items.isEmpty) return const EmptyView(message: 'No EMI schedule');
+    final accrual = l['interestAccrual'] == true;
+    if (items.isEmpty) return EmptyView(message: accrual ? 'No ledger entries' : 'No EMI schedule');
     final showInterest = !loanFieldHidden(l, 'totalInterest');
     return ListView.builder(
       padding: _tabPadding(l, 0),
@@ -775,12 +817,22 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
       itemBuilder: (ctx, i) {
         final e = Map<String, dynamic>.from(items[i] as Map);
         final status = e['status']?.toString() ?? '';
-        final parts = <String>[
-          'EMI ${formatCurrency(e['emiAmount'])}',
-          'P ${formatCurrency(e['principalComponent'])}',
-          if (showInterest) 'I ${formatCurrency(e['interestComponent'])}',
-          if (toNum(e['lateFee']) > 0) 'Late ${formatCurrency(e['lateFee'])}',
-        ];
+        // Accrual ledger rows are either the principal (booked at disbursement)
+        // or one month's interest — never an installment of both.
+        final isPrincipalRow = toNum(e['principalComponent']) > 0;
+        final parts = accrual
+            ? <String>[
+                isPrincipalRow
+                    ? 'Principal ${formatCurrency(e['principalComponent'])}'
+                    : 'Interest ${formatCurrency(e['interestComponent'])}',
+                if (toNum(e['lateFee']) > 0) 'Late ${formatCurrency(e['lateFee'])}',
+              ]
+            : <String>[
+                'EMI ${formatCurrency(e['emiAmount'])}',
+                'P ${formatCurrency(e['principalComponent'])}',
+                if (showInterest) 'I ${formatCurrency(e['interestComponent'])}',
+                if (toNum(e['lateFee']) > 0) 'Late ${formatCurrency(e['lateFee'])}',
+              ];
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           child: ListTile(
