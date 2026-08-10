@@ -72,7 +72,24 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
   final _amountCtrl = TextEditingController();
   final _alrCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
+  // UTR / txn id / cheque number — the backend rejects any non-CASH mode without one.
+  final _referenceCtrl = TextEditingController();
   String _mode = 'CASH';
+  static const _modeLabels = {
+    'CASH': 'Cash',
+    'UPI': 'UPI',
+    'BANK_TRANSFER': 'Bank Transfer',
+    'CHEQUE': 'Cheque',
+    'ONLINE': 'Online',
+  };
+  String get _modeLabel => _modeLabels[_mode] ?? _mode;
+  // What to ask for varies by mode; a cheque has no UTR and UPI has no cheque number.
+  String get _referenceHint => switch (_mode) {
+        'UPI' => 'UPI txn / UTR number',
+        'BANK_TRANSFER' => 'UTR / transaction number',
+        'CHEQUE' => 'Cheque number',
+        _ => 'Transaction reference',
+      };
   bool _saving = false;
   bool _loadingLoans = false;
   Timer? _debounce;
@@ -108,6 +125,7 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
     _amountCtrl.dispose();
     _alrCtrl.dispose();
     _notesCtrl.dispose();
+    _referenceCtrl.dispose();
     super.dispose();
   }
 
@@ -289,6 +307,12 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
     if (_alrCtrl.text.trim().isNotEmpty && (alr == null || alr < 0)) {
       return showToast('Enter valid ALR', error: true);
     }
+    // Drop any reference typed before the mode was switched back to cash.
+    final reference = _mode == 'CASH' ? '' : _referenceCtrl.text.trim();
+    // Caught here rather than server-side so the collector sees which field to fill.
+    if (_mode != 'CASH' && reference.isEmpty) {
+      return showToast('Enter the payment reference for a $_modeLabel payment', error: true);
+    }
     setState(() => _saving = true);
     try {
       // Best-effort GPS — never blocks recording if unavailable.
@@ -298,6 +322,7 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
         'amount': amount,
         if (alr != null && alr > 0) 'alrAmount': alr,
         'paymentMode': _mode,
+        if (reference.isNotEmpty) 'paymentReference': reference,
         if (_notesCtrl.text.trim().isNotEmpty) 'notes': _notesCtrl.text.trim(),
         if (location != null) ...location.toJson(),
       });
@@ -497,15 +522,21 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
                   DropdownButtonFormField<String>(
                     initialValue: _mode,
                     decoration: const InputDecoration(labelText: 'Payment Mode'),
-                    items: const [
-                      DropdownMenuItem(value: 'CASH', child: Text('Cash')),
-                      DropdownMenuItem(value: 'UPI', child: Text('UPI')),
-                      DropdownMenuItem(value: 'BANK_TRANSFER', child: Text('Bank Transfer')),
-                      DropdownMenuItem(value: 'CHEQUE', child: Text('Cheque')),
-                      DropdownMenuItem(value: 'ONLINE', child: Text('Online')),
+                    items: [
+                      for (final e in _modeLabels.entries)
+                        DropdownMenuItem(value: e.key, child: Text(e.value)),
                     ],
                     onChanged: (v) => setState(() => _mode = v!),
                   ),
+                  // Only non-cash payments carry a reference, and there the backend requires one.
+                  if (_mode != 'CASH') ...[
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _referenceCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: InputDecoration(labelText: 'Reference *', hintText: _referenceHint),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   TextField(controller: _notesCtrl, decoration: const InputDecoration(labelText: 'Notes')),
                 ],
