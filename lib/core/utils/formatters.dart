@@ -44,6 +44,27 @@ String formatDateTime(dynamic v) {
 
 String formatInputDate(DateTime d) => _inputDate.format(d);
 
+/// Loan types that repay once a week — their age reads as "Week N", not "Day N".
+/// Group loans are always weekly lines, so they count in weeks like WEEKLY loans.
+const _weeklyLoanTypes = {'WEEKLY', 'GROUP'};
+
+/// Age of a loan since disbursement, mirroring formatLoanAge() in the web app's
+/// formatters.js: the disbursement day itself is Day 1 / Week 1. Returns '-'
+/// when there is no disbursement date or the loan hasn't started yet.
+String dayWeekLabel(dynamic disbursedDate, String? loanType) {
+  if (disbursedDate == null) return '-';
+  DateTime d;
+  try {
+    d = DateTime.parse(disbursedDate.toString()).toLocal();
+  } catch (_) {
+    return '-';
+  }
+  final days = DateTime.now().difference(d).inDays + 1;
+  if (days <= 0) return '-';
+  if (_weeklyLoanTypes.contains(loanType)) return 'Week ${(days / 7).ceil()}';
+  return 'Day $days';
+}
+
 /// Time-only (12-hour) for a full datetime, e.g. "05:30 PM". Used where the date
 /// is already shown alongside and only the clock time needs to appear. Mirrors
 /// formatTime() in the web app's formatters.js.

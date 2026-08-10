@@ -8,6 +8,19 @@ import '../data/loan_group_repo.dart';
 import '../../app_shell.dart';
 import '../../../core/widgets/app_bottom_nav.dart';
 
+/// Which installment the group's line is running, e.g. "Week 12 / 20" — the number
+/// the field speaks in. The server sends it in the group's own cadence (taken from
+/// its longest-running active loan); a group with nothing running sends null.
+const _periodNoun = {'DAILY': 'Day', 'WEEKLY': 'Week', 'MONTHLY': 'Month'};
+String? runningLabel(dynamic period) {
+  if (period is! Map) return null;
+  final n = int.tryParse(period['number']?.toString() ?? '') ?? 0;
+  if (n <= 0) return null;
+  final noun = _periodNoun[period['cadence']?.toString()] ?? 'Week';
+  final total = int.tryParse(period['total']?.toString() ?? '') ?? 0;
+  return total > 0 ? '$noun $n / $total' : '$noun $n';
+}
+
 class LoanGroupListPage extends ConsumerStatefulWidget {
   const LoanGroupListPage({super.key});
   @override
@@ -62,10 +75,14 @@ class _LoanGroupListPageState extends ConsumerState<LoanGroupListPage> {
                     : leaderName.isNotEmpty
                         ? leaderName
                         : leaderPhone;
+                final running = runningLabel(g['runningPeriod']);
+                final meetingDay = g['meetingDay']?.toString() ?? '';
                 final subtitleParts = <String>[
                   if (leaderText.isNotEmpty) leaderText,
                   if (g['memberCount'] != null) '${g['memberCount']} members',
                   if ((g['cycle']?.toString() ?? '').isNotEmpty) 'Cycle: ${g['cycle']}',
+                  if (meetingDay.isNotEmpty) meetingDay,
+                  ?running,
                 ];
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),

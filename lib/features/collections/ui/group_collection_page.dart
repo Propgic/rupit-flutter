@@ -14,9 +14,15 @@ class GroupCollectionPage extends ConsumerStatefulWidget {
   ConsumerState<GroupCollectionPage> createState() => _GroupCollectionPageState();
 }
 
+/// Bucket for groups carrying no agent, so they stay pickable once the operator
+/// has narrowed to an agent. Not a real user id, so it can never collide with one.
+const _unassignedAgent = '__unassigned__';
+
 class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
   Map<String, dynamic>? _group;
   List<Map<String, dynamic>> _groups = [];
+  // Optional narrowing of the group picker to one agent's groups. null = all agents.
+  String? _agentId;
   bool _groupsLoading = false;
   List<Map<String, dynamic>> _loans = [];
   final Map<String, TextEditingController> _amounts = {};
@@ -61,6 +67,75 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
     }
   }
 
+  // Agent = the team member the group is assigned to (LoanGroup.assignedTo). Options
+  // are built from the groups already on offer rather than from /team, so the picker
+  // lists only agents who actually have a group to collect today, each with the
+  // number of groups picking them narrows the list to.
+  List<Map<String, dynamic>> _agentOptions() {
+    final byId = <String, Map<String, dynamic>>{};
+    var unassigned = 0;
+    for (final g in _groups) {
+      final a = g['assignedTo'];
+      if (a is! Map || a['id'] == null) {
+        unassigned += 1;
+        continue;
+      }
+      final id = a['id'].toString();
+      final entry = byId[id] ?? {'id': id, 'name': a['name']?.toString() ?? 'Unnamed', 'count': 0};
+      entry['count'] = (entry['count'] as int) + 1;
+      byId[id] = entry;
+    }
+    final options = byId.values.toList()
+      ..sort((a, b) => (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase()));
+    // Only worth offering alongside real agents — on its own it would filter to everything.
+    if (options.isNotEmpty && unassigned > 0) {
+      options.add({'id': _unassignedAgent, 'name': 'Unassigned', 'count': unassigned});
+    }
+    return options;
+  }
+
+  List<Map<String, dynamic>> get _visibleGroups {
+    if (_agentId == null) return _groups;
+    return _groups.where((g) {
+      final a = g['assignedTo'];
+      final id = (a is Map && a['id'] != null) ? a['id'].toString() : _unassignedAgent;
+      return id == _agentId;
+    }).toList();
+  }
+
+  String? get _agentName {
+    if (_agentId == null) return null;
+    for (final a in _agentOptions()) {
+      if (a['id'] == _agentId) return a['name'] as String;
+    }
+    return null;
+  }
+
+  Future<void> _pickAgent(List<Map<String, dynamic>> options) async {
+    final picked = await showSearchableSelect<String>(
+      context,
+      title: 'Agent',
+      searchHint: 'Search agents',
+      selected: _agentId ?? '',
+      options: [
+        SelectOption<String>(value: '', label: 'All agents'),
+        ...options.map((a) => SelectOption<String>(
+              value: a['id'].toString(),
+              label: '${a['name']} (${a['count']})',
+              searchText: a['name'].toString(),
+            )),
+      ],
+    );
+    if (picked == null) return;
+    setState(() {
+      _agentId = picked.isEmpty ? null : picked;
+      // The picked group may not be this agent's, so it is dropped rather than
+      // left loaded under the new filter.
+      _group = null;
+      _loans = [];
+    });
+  }
+
   // Today's collection status for the picker, from the per-group counts the
   // /loan-groups list returns (active loans vs. those collected today).
   StatusChip _groupStatusChip(Map<String, dynamic> g) {
@@ -73,13 +148,21 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
   }
 
   Future<void> _pickGroup() async {
-    if (_groups.isEmpty) return showToast('No groups due for collection today', error: true);
+    final groups = _visibleGroups;
+    if (groups.isEmpty) {
+      return showToast(
+        _agentId == null
+            ? 'No groups due for collection today'
+            : 'No groups for ${_agentName ?? 'this agent'} today',
+        error: true,
+      );
+    }
     final picked = await showSearchableSelect<String>(
       context,
       title: 'Select Group',
       searchHint: 'Search by name, number or leader',
       selected: _group?['id']?.toString(),
-      options: _groups
+      options: groups
           .map((g) => SelectOption<String>(
                 value: g['id'].toString(),
                 label: '${g['name']} (${g['groupNumber']})',
@@ -166,10 +249,32 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
     }
   }
 
+  // Which installment the loan is running, in its own cadence — "Week 5 / 20".
+  // Null while the schedule hasn't reached its first installment.
+  static const _periodNouns = {'DAYS': 'Day', 'WEEKS': 'Week', 'MONTHS': 'Month', 'YEARS': 'Month'};
+  String? _installmentLabel(Map<String, dynamic> l) {
+    final r = l['runningEmi'];
+    if (r is! Map) return null;
+    final n = toNum(r['number']).toInt();
+    if (n <= 0) return null;
+    final total = toNum(r['total']).toInt();
+    final noun = l['loanType'] == 'DAILY'
+        ? 'Day'
+        : l['loanType'] == 'WEEKLY'
+            ? 'Week'
+            : _periodNouns[l['tenureType']?.toString()] ?? 'Week';
+    return total > 0 ? '$noun $n / $total' : '$noun $n';
+  }
+
   @override
   Widget build(BuildContext context) {
     final collectedCount = _loans.where((l) => l['todayCollection'] != null).length;
     final allCollected = _loans.isNotEmpty && collectedCount == _loans.length;
+    final agentOptions = _agentOptions();
+    // The filter only earns its place when there is more than one agent to choose
+    // between: a single-agent org, or a field officer who only ever sees their own
+    // groups, gets the plain group picker.
+    final showAgentFilter = agentOptions.length > 1;
     return Scaffold(
       appBar: AppBar(title: const Text('Group Collection')),
       body: ListView(
@@ -177,23 +282,36 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
         children: [
           SectionCard(
             title: 'Group',
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.groups),
-              title: Text(_group == null
-                  ? (_groupsLoading ? 'Loading groups...' : 'Select Group *')
-                  : _group!['name']?.toString() ?? ''),
-              trailing: _group == null
-                  ? const Icon(Icons.chevron_right)
-                  : Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _groupStatusChip(_group!),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.chevron_right),
-                      ],
-                    ),
-              onTap: _groupsLoading ? null : _pickGroup,
+            child: Column(
+              children: [
+                if (showAgentFilter)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.person_outline),
+                    title: Text(_agentName ?? 'All agents'),
+                    subtitle: Text('${_visibleGroups.length} group(s)'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _groupsLoading ? null : () => _pickAgent(agentOptions),
+                  ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.groups),
+                  title: Text(_group == null
+                      ? (_groupsLoading ? 'Loading groups...' : 'Select Group *')
+                      : _group!['name']?.toString() ?? ''),
+                  trailing: _group == null
+                      ? const Icon(Icons.chevron_right)
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _groupStatusChip(_group!),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.chevron_right),
+                          ],
+                        ),
+                  onTap: _groupsLoading ? null : _pickGroup,
+                ),
+              ],
             ),
           ),
           SectionCard(
@@ -243,6 +361,7 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
                   ..._loans.map((l) {
                     final c = Map<String, dynamic>.from(l['customer'] ?? {});
                     final today = l['todayCollection'] is Map ? Map<String, dynamic>.from(l['todayCollection'] as Map) : null;
+                    final installment = _installmentLabel(l);
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 6),
                       child: Row(
@@ -252,7 +371,14 @@ class _GroupCollectionPageState extends ConsumerState<GroupCollectionPage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text('${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim(), style: const TextStyle(fontWeight: FontWeight.w500)),
-                                Text('${l['loanNumber']} • EMI ${formatCurrency(l['emiAmount'])}', style: const TextStyle(fontSize: 12)),
+                                Text(
+                                  [
+                                    l['loanNumber']?.toString() ?? '',
+                                    ?installment,
+                                    'EMI ${formatCurrency(l['emiAmount'])}',
+                                  ].join(' • '),
+                                  style: const TextStyle(fontSize: 12),
+                                ),
                               ],
                             ),
                           ),

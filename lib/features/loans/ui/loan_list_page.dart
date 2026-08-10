@@ -47,26 +47,6 @@ const _statusDropdownOptions = [
   'WRITTEN_OFF',
 ];
 
-/// Mirrors the web loan list "Day" column (LoanList.jsx): 1-indexed days since
-/// disbursement, shown as "Week N" for weekly loans. Returns '-' when there is
-/// no disbursement date or the loan hasn't started yet.
-String _dayWeekLabel(dynamic disbursedDate, String? loanType) {
-  if (disbursedDate == null) return '-';
-  DateTime d;
-  try {
-    d = DateTime.parse(disbursedDate.toString()).toLocal();
-  } catch (_) {
-    return '-';
-  }
-  final days = DateTime.now().difference(d).inDays + 1;
-  if (days <= 0) return '-';
-  if (loanType == 'WEEKLY') {
-    final weeks = days ~/ 7;
-    return weeks < 1 ? '-' : 'Week $weeks';
-  }
-  return 'Day $days';
-}
-
 class LoanListPage extends ConsumerStatefulWidget {
   final String? fromDate;
   final String? toDate;
@@ -610,7 +590,7 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
     }
     final l = _items[i];
     final c = Map<String, dynamic>.from(l['customer'] ?? {});
-    final dayWeek = _dayWeekLabel(l['disbursedDate'], l['loanType']?.toString());
+    final dayWeek = dayWeekLabel(l['disbursedDate'], l['loanType']?.toString());
     final timeline = <String>[
       if (dayWeek != '-') dayWeek,
       if (l['endDate'] != null) 'Ends ${formatDate(l['endDate'])}',

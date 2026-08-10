@@ -10,6 +10,8 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
 import '../data/loan_repo.dart';
+import '../../loan_groups/data/loan_group_repo.dart';
+import '../../team/data/team_repo.dart';
 
 final loanDetailProvider = FutureProvider.autoDispose.family<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(loanRepoProvider).get(id);
@@ -98,11 +100,16 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                   final ok = await confirmDialog(context, message: 'Restore this loan to the active book?', confirmText: 'Unarchive');
                   if (ok) _doAction(() => ref.read(loanRepoProvider).unarchive(widget.id), 'Loan unarchived');
                 }
+                if (v == 'edit') {
+                  await _openEdit(l);
+                }
                 if (v == 'correct') {
                   await _openCorrect(l);
                 }
               },
               itemBuilder: (_) => [
+                if (isAdmin && correctionEnabled)
+                  const PopupMenuItem(value: 'edit', child: Text('Edit Loan')),
                 if (isAdmin && correctionEnabled && l['status'] == 'ACTIVE')
                   const PopupMenuItem(value: 'correct', child: Text('Correct Terms')),
                 if (isMgr && l['status'] == 'APPROVED') const PopupMenuItem(value: 'disburse', child: Text('Disburse')),
@@ -373,18 +380,8 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
               KeyValueRow(label: accrual ? 'Interest Charged Through' : 'End Date', value: formatDate(l['endDate'])),
               if (l['disbursedDate'] != null)
                 KeyValueRow(
-                  label: 'Day',
-                  value: () {
-                    final disbursed = DateTime.tryParse(l['disbursedDate'].toString());
-                    if (disbursed == null) return '-';
-                    final days = DateTime.now().difference(disbursed).inDays + 1;
-                    if (days <= 0) return '-';
-                    if (l['loanType'] == 'WEEKLY') {
-                      final weeks = days ~/ 7;
-                      return weeks < 1 ? '-' : 'Week $weeks';
-                    }
-                    return 'Day $days';
-                  }(),
+                  label: l['loanType'] == 'WEEKLY' || l['loanType'] == 'GROUP' ? 'Week' : 'Day',
+                  value: dayWeekLabel(l['disbursedDate'], l['loanType']?.toString()),
                   valueColor: const Color(0xFFEA580C),
                 ),
             ],
@@ -405,6 +402,20 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
           ),
         ),
         _closureCard(l),
+        // The group a group loan belongs to — the same link the web detail page
+        // carries, and where a move made from Edit Loan shows up.
+        if (l['group'] is Map)
+          SectionCard(
+            title: 'Loan Group',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.groups_outlined),
+              title: Text(l['group']['name']?.toString() ?? '-'),
+              subtitle: Text(l['group']['groupNumber']?.toString() ?? ''),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: l['group']['id'] == null ? null : () => context.push('/loan-groups/${l['group']['id']}'),
+            ),
+          ),
         if (assignee.isNotEmpty)
           SectionCard(
             title: 'Assigned To',
@@ -711,6 +722,19 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
         ],
       ),
     );
+  }
+
+  // Opens the edit sheet (mirrors the web "Edit Loan" modal). On success the loan
+  // is refetched — terms, schedule and the group it belongs to may all have moved.
+  Future<void> _openEdit(Map<String, dynamic> l) async {
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _EditLoanSheet(loanId: widget.id, loan: l),
+    );
+    if (saved == true) {
+      ref.invalidate(loanDetailProvider(widget.id));
+    }
   }
 
   // Opens the structural-correction sheet (mirrors the web "Correct Loan Terms"
@@ -1097,6 +1121,519 @@ class _CloseLoanSheetState extends ConsumerState<_CloseLoanSheet> {
                         : _type == 'SETTLEMENT'
                             ? 'Settle & Close'
                             : 'Close Loan'),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Edit form for a booked loan (ORG_ADMIN + the `enableLoanCorrection` feature).
+/// Mirrors the web "Edit Loan" modal, including its two modes: with no collections
+/// recorded every term is editable and the EMI schedule is regenerated on save;
+/// once money has come in — or on an account (khata) loan, whose ledger is
+/// hand-built — only assignment, group, fees and notes are, which is exactly what
+/// the API will accept. Structural fixes after collections go through Correct Terms.
+class _EditLoanSheet extends ConsumerStatefulWidget {
+  final String loanId;
+  final Map<String, dynamic> loan;
+  const _EditLoanSheet({required this.loanId, required this.loan});
+  @override
+  ConsumerState<_EditLoanSheet> createState() => _EditLoanSheetState();
+}
+
+class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
+  late String _loanType;
+  late String _tenureType;
+  late String _interestType;
+  late bool _deductUpfront;
+  late DateTime _startDate;
+  late List<int> _collectionDays;
+  final _principal = TextEditingController();
+  final _tenure = TextEditingController();
+  final _rate = TextEditingController();
+  final _fee = TextEditingController();
+  final _alr = TextEditingController();
+  final _lateFee = TextEditingController();
+  final _notes = TextEditingController();
+  Map<String, dynamic>? _group;
+  Map<String, dynamic>? _assignee;
+  // Picker lists, fetched on first tap and kept for the life of the sheet.
+  List<Map<String, dynamic>>? _groups;
+  List<Map<String, dynamic>>? _team;
+  bool _loadingPicker = false;
+  bool _saving = false;
+
+  /// The loan's group as it stood when the sheet opened — the reference for "has
+  /// the group changed" and for the rule that a group loan keeps a group.
+  String? _originalGroupId;
+
+  @override
+  void initState() {
+    super.initState();
+    final l = widget.loan;
+    _loanType = l['loanType']?.toString() ?? 'PERSONAL';
+    _tenureType = l['tenureType']?.toString() ?? 'MONTHS';
+    _interestType = l['interestType']?.toString() == 'FLAT' ? 'FLAT' : 'REDUCING';
+    _deductUpfront = l['deductInterestUpfront'] == true;
+    _startDate = DateTime.tryParse(l['startDate']?.toString() ?? '') ?? DateTime.now();
+    final days = (l['collectionDays'] is List)
+        ? (l['collectionDays'] as List).map((e) => toNum(e).toInt()).toList()
+        : <int>[];
+    _collectionDays = _seedDays(_loanType, days);
+    _principal.text = _numText(l['principalAmount']);
+    _tenure.text = _numText(l['tenure']);
+    _rate.text = _numText(l['interestRate']);
+    _fee.text = _numText(l['processingFee']);
+    _alr.text = _numText(l['alr']);
+    _lateFee.text = _numText(l['lateFeePerDay']);
+    _notes.text = l['notes']?.toString() ?? '';
+    if (l['group'] is Map) _group = Map<String, dynamic>.from(l['group'] as Map);
+    if (l['assignedTo'] is Map) _assignee = Map<String, dynamic>.from(l['assignedTo'] as Map);
+    _originalGroupId = _group?['id']?.toString();
+  }
+
+  @override
+  void dispose() {
+    _principal.dispose();
+    _tenure.dispose();
+    _rate.dispose();
+    _fee.dispose();
+    _alr.dispose();
+    _lateFee.dispose();
+    _notes.dispose();
+    super.dispose();
+  }
+
+  // Mirrors web handleEditTypeChange: DAILY seeds the six working days, WEEKLY one.
+  List<int> _seedDays(String type, List<int> days) {
+    if (type == 'DAILY' && days.isEmpty) return [1, 2, 3, 4, 5, 6];
+    if (type == 'WEEKLY' && days.length != 1) return [1];
+    return List<int>.from(days);
+  }
+
+  String _numText(dynamic v) {
+    if (v == null) return '';
+    final n = toNum(v).toDouble();
+    if (n == n.roundToDouble()) return n.toInt().toString();
+    return n.toString();
+  }
+
+  /// Whether every term is editable. The API allows that only while no collection
+  /// has been recorded and the loan is not an accrual (khata) account, whose
+  /// hand-built ledger a regenerated EMI schedule would destroy — so the form
+  /// offers exactly what the save will honour.
+  bool get _fullEdit {
+    final cols = (widget.loan['collections'] is List) ? widget.loan['collections'] as List : const [];
+    return cols.isEmpty && widget.loan['interestAccrual'] != true;
+  }
+
+  bool get _isInstallment => _loanType == 'DAILY' || _loanType == 'WEEKLY';
+  bool get _isPeriodUnit => _tenureType == 'WEEKS' || _tenureType == 'DAYS';
+  String get _periodWord => _tenureType == 'WEEKS' ? 'week' : 'day';
+
+  String get _rateLabel {
+    if (_isInstallment) return 'Flat Interest Rate (% on principal)';
+    if (_isPeriodUnit && _interestType == 'REDUCING') return 'Interest Rate (% per month)';
+    if (_isPeriodUnit) return 'Flat Interest Rate (% on principal)';
+    return 'Interest Rate (% p.a.)';
+  }
+
+  double? _num(TextEditingController c) => double.tryParse(c.text.trim());
+
+  Future<List<T>> _withPickerLoading<T>(Future<List<T>> Function() fetch) async {
+    setState(() => _loadingPicker = true);
+    try {
+      return await fetch();
+    } on ApiException catch (e) {
+      showToast(e.message, error: true);
+      return <T>[];
+    } finally {
+      if (mounted) setState(() => _loadingPicker = false);
+    }
+  }
+
+  Future<void> _pickGroup() async {
+    // Cached only once it holds something: a failed or empty fetch must not stick,
+    // or the next tap would report "no groups" without asking the server again.
+    final groups = _groups ??
+        await _withPickerLoading(() async {
+          final r = await ref.read(loanGroupRepoProvider).list(limit: 500);
+          final list = ((r['data'] as List?) ?? [])
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .where((g) => g['isActive'] == true)
+              .toList();
+          // Keep the loan's own group on offer even if it has since been deactivated,
+          // so the current selection is visible rather than reading as unset.
+          final own = _group;
+          if (own != null && !list.any((g) => g['id'].toString() == own['id'].toString())) {
+            list.insert(0, own);
+          }
+          return list;
+        });
+    if (!mounted) return;
+    if (groups.isEmpty) return showToast('No active loan groups', error: true);
+    _groups = groups;
+    final picked = await showSearchableSelect<String>(
+      context,
+      title: 'Select Loan Group',
+      searchHint: 'Search by group number or name',
+      selected: _group?['id']?.toString(),
+      options: groups
+          .map((g) => SelectOption<String>(
+                value: g['id'].toString(),
+                label: '${g['groupNumber'] ?? ''} — ${g['name'] ?? ''}',
+                searchText: '${g['groupNumber'] ?? ''} ${g['name'] ?? ''} ${g['leaderName'] ?? ''}',
+              ))
+          .toList(),
+    );
+    if (picked == null) return;
+    setState(() => _group = groups.firstWhere((g) => g['id'].toString() == picked));
+  }
+
+  Future<void> _pickAssignee() async {
+    final team = _team ??
+        await _withPickerLoading(() async {
+          final list = await ref.read(teamRepoProvider).list(limit: 500);
+          return list
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .where((m) => m['isActive'] == true)
+              .toList();
+        });
+    if (!mounted) return;
+    if (team.isEmpty) return showToast('No active team members', error: true);
+    _team = team;
+    final picked = await showSearchableSelect<String>(
+      context,
+      title: 'Assigned To',
+      searchHint: 'Search by name',
+      selected: _assignee?['id']?.toString(),
+      options: team
+          .map((m) => SelectOption<String>(
+                value: m['id'].toString(),
+                label: '${m['name'] ?? ''} — ${m['role'] ?? ''}',
+                searchText: '${m['name'] ?? ''} ${m['role'] ?? ''}',
+              ))
+          .toList(),
+    );
+    if (picked == null) return;
+    setState(() => _assignee = team.firstWhere((m) => m['id'].toString() == picked));
+  }
+
+  Future<void> _submit() async {
+    // A group loan must belong to a group (same rule loan creation enforces).
+    // Legacy migrated group loans that never had one stay editable — don't strand them.
+    final groupRequired = _loanType == 'GROUP' &&
+        (widget.loan['loanType'] != 'GROUP' || _originalGroupId != null);
+    if (groupRequired && _group == null) {
+      return showToast('Select a loan group', error: true);
+    }
+    setState(() => _saving = true);
+    try {
+      final body = <String, dynamic>{
+        if (_assignee != null) 'assignedToId': _assignee!['id'],
+        if (_rate.text.trim().isNotEmpty) 'interestRate': _num(_rate),
+        if (_fee.text.trim().isNotEmpty) 'processingFee': _num(_fee),
+        'alr': _alr.text.trim().isEmpty ? null : _num(_alr),
+        if (_lateFee.text.trim().isNotEmpty) 'lateFeePerDay': _num(_lateFee),
+        'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+        // The group can be changed in either mode — it is a reassignment, not a
+        // term. Switching the type away from GROUP detaches the loan from its group.
+        if (_loanType == 'GROUP') 'groupId': _group?['id'],
+        if (_loanType != 'GROUP' && _fullEdit && _originalGroupId != null) 'groupId': null,
+        if (_fullEdit) ...{
+          'loanType': _loanType,
+          if (_principal.text.trim().isNotEmpty) 'principalAmount': _num(_principal),
+          if (_tenure.text.trim().isNotEmpty) 'tenure': int.tryParse(_tenure.text.trim()),
+          'tenureType': _tenureType,
+          'interestType': _interestType,
+          'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
+          'startDate': formatInputDate(_startDate),
+          // Collection days only apply to DAILY/WEEKLY; null clears them for other
+          // types so the backend rebuilds a standard schedule, not a day-filtered one.
+          'collectionDays': _isInstallment ? _collectionDays : null,
+        },
+      };
+      await ref.read(loanRepoProvider).update(widget.loanId, body);
+      if (!mounted) return;
+      showToast('Loan updated');
+      Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      showToast(e.message, error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final groupLoansEnabled = ref.watch(authProvider).org?.feature('enableGroupLoan') == true;
+    return DraggableScrollableSheet(
+      initialChildSize: 0.9,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (_, ctrl) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: ListView(
+          controller: ctrl,
+          padding: const EdgeInsets.all(16),
+          children: [
+            Row(
+              children: [
+                const Expanded(child: Text('Edit Loan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+              ],
+            ),
+            if (!_fullEdit)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.warning.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.warning.withValues(alpha: 0.4)),
+                ),
+                child: Text(
+                  widget.loan['interestAccrual'] == true
+                      ? 'This is an account (khata) loan — its ledger is kept by hand, so only assignment, group, fees and notes can be edited.'
+                      : 'Collections have been recorded — only assignment, group, fees and notes can be edited. Use Correct Terms to fix the terms themselves.',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            if (_fullEdit) ...[
+              DropdownButtonFormField<String>(
+                initialValue: _loanType,
+                decoration: const InputDecoration(labelText: 'Loan Type'),
+                items: [
+                  const DropdownMenuItem(value: 'PERSONAL', child: Text('Personal')),
+                  const DropdownMenuItem(value: 'GOLD', child: Text('Gold')),
+                  // Kept on offer for a loan that already is one, so an org that has
+                  // since switched the feature off can still open its group loans.
+                  if (groupLoansEnabled || _loanType == 'GROUP')
+                    const DropdownMenuItem(value: 'GROUP', child: Text('Group')),
+                  const DropdownMenuItem(value: 'VEHICLE', child: Text('Vehicle')),
+                  const DropdownMenuItem(value: 'PROPERTY', child: Text('Property/Mortgage')),
+                  const DropdownMenuItem(value: 'BUSINESS', child: Text('Business')),
+                  const DropdownMenuItem(value: 'AGRICULTURE', child: Text('Agriculture')),
+                  const DropdownMenuItem(value: 'EDUCATION', child: Text('Education')),
+                  const DropdownMenuItem(value: 'DAILY', child: Text('Daily')),
+                  const DropdownMenuItem(value: 'WEEKLY', child: Text('Weekly')),
+                ],
+                onChanged: (v) => setState(() {
+                  _loanType = v ?? _loanType;
+                  _collectionDays = _seedDays(_loanType, _collectionDays);
+                }),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _principal,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Loan Amount', prefixText: '₹ '),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _tenure,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(labelText: _isInstallment ? 'No. of Installments' : 'Tenure'),
+                    ),
+                  ),
+                  if (!_isInstallment) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _tenureType,
+                        decoration: const InputDecoration(labelText: 'Unit'),
+                        items: const [
+                          DropdownMenuItem(value: 'DAYS', child: Text('Days')),
+                          DropdownMenuItem(value: 'WEEKS', child: Text('Weeks')),
+                          DropdownMenuItem(value: 'MONTHS', child: Text('Months')),
+                          DropdownMenuItem(value: 'YEARS', child: Text('Years')),
+                        ],
+                        onChanged: (v) => setState(() => _tenureType = v ?? 'MONTHS'),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 4),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('Disbursement / Start Date: ${formatDate(_startDate)}'),
+                trailing: const Icon(Icons.calendar_today),
+                onTap: () async {
+                  final d = await showDatePicker(
+                    context: context,
+                    firstDate: DateTime(2015),
+                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                    initialDate: _startDate,
+                  );
+                  if (d != null) setState(() => _startDate = d);
+                },
+              ),
+              // Interest method applies to every term loan; the DAILY/WEEKLY loan
+              // types are fixed flat-upfront and the backend normalizes them.
+              if (!_isInstallment) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _interestType,
+                  decoration: const InputDecoration(labelText: 'Interest Calculation'),
+                  items: const [
+                    DropdownMenuItem(value: 'REDUCING', child: Text('Reducing Balance (interest on outstanding)')),
+                    DropdownMenuItem(value: 'FLAT', child: Text('Flat Rate (interest on full principal)')),
+                  ],
+                  onChanged: (v) => setState(() {
+                    _interestType = v ?? 'REDUCING';
+                    if (_interestType != 'FLAT') _deductUpfront = false;
+                  }),
+                ),
+                if (_isPeriodUnit && _interestType == 'REDUCING')
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Interest is charged on the outstanding balance each $_periodWord; '
+                      'the rate is per month and is converted to a ${_tenureType == 'WEEKS' ? 'weekly' : 'daily'} charge automatically.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                if (_interestType == 'FLAT')
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Deduct interest upfront'),
+                    subtitle: const Text('Interest is taken out of the disbursed amount; EMIs repay principal only.'),
+                    value: _deductUpfront,
+                    onChanged: (v) => setState(() => _deductUpfront = v),
+                  ),
+              ],
+              if (_loanType == 'DAILY') ...[
+                const SizedBox(height: 14),
+                const Text('Collection Days', style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _weekDays.map((d) {
+                    final v = d['v'] as int;
+                    return FilterChip(
+                      label: Text(d['l'] as String),
+                      selected: _collectionDays.contains(v),
+                      onSelected: (on) => setState(() {
+                        _collectionDays = on
+                            ? ([..._collectionDays, v]..sort())
+                            : _collectionDays.where((x) => x != v).toList();
+                      }),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${_collectionDays.isEmpty ? 7 : _collectionDays.length} day(s)/week — EMIs are scheduled only on these days',
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                ),
+              ],
+              if (_loanType == 'WEEKLY') ...[
+                const SizedBox(height: 14),
+                const Text('Collection Day (one per week)', style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _weekDays.map((d) {
+                    final v = d['v'] as int;
+                    return ChoiceChip(
+                      label: Text(d['l'] as String),
+                      selected: _collectionDays.isNotEmpty && _collectionDays.first == v,
+                      onSelected: (_) => setState(() => _collectionDays = [v]),
+                    );
+                  }).toList(),
+                ),
+              ],
+              const SizedBox(height: 10),
+            ],
+            if (_loanType == 'GROUP') ...[
+              SearchableSelectField(
+                label: 'Loan Group',
+                display: _group == null ? null : '${_group!['groupNumber'] ?? ''} — ${_group!['name'] ?? ''}',
+                hint: _loadingPicker ? 'Loading groups...' : 'Select a group',
+                onTap: _loadingPicker ? null : _pickGroup,
+              ),
+              // The schedule is only re-anchored to the new group's meeting day when it
+              // is regenerated, which a loan with collections never does.
+              if (!_fullEdit && _group?['id']?.toString() != _originalGroupId)
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text(
+                    'The loan moves to the new group; its existing due dates are not changed.',
+                    style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                  ),
+                ),
+              const SizedBox(height: 10),
+            ],
+            SearchableSelectField(
+              label: 'Assigned To',
+              display: _assignee?['name']?.toString(),
+              hint: _loadingPicker ? 'Loading team...' : 'Select team member',
+              onTap: _loadingPicker ? null : _pickAssignee,
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: _rate,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(labelText: _rateLabel),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _fee,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Processing Fee', prefixText: '₹ '),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextFormField(
+                    controller: _alr,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'ALR', prefixText: '₹ '),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: _lateFee,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Late Fee / Day', prefixText: '₹ '),
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: _notes,
+              maxLines: 2,
+              decoration: const InputDecoration(labelText: 'Notes'),
+            ),
+            if (_fullEdit)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Changing the loan type, amount, tenure, or start date will regenerate the EMI schedule.',
+                  style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                ),
+              ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _saving ? null : _submit,
+                child: _saving
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save Changes'),
               ),
             ),
             const SizedBox(height: 20),
