@@ -590,6 +590,7 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
     }
     final l = _items[i];
     final c = Map<String, dynamic>.from(l['customer'] ?? {});
+    final customerName = '${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim();
     final dayWeek = dayWeekLabel(l['disbursedDate'], l['loanType']?.toString());
     final timeline = <String>[
       if (dayWeek != '-') dayWeek,
@@ -603,8 +604,7 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim(),
-                style: const TextStyle(fontWeight: FontWeight.w500)),
+            Text(customerName, style: const TextStyle(fontWeight: FontWeight.w500)),
             Text('${l['loanType'] ?? ''} • ${formatCurrency(l['principalAmount'])}',
                 style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
             Text('Balance: ${formatCurrency(l['balance'])}',
@@ -643,6 +643,13 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
           crossAxisAlignment: CrossAxisAlignment.end,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // Tapping the photo zooms it; without a photo the tap falls
+            // through to the tile (same pattern as the customer list).
+            GestureDetector(
+              onTap: c['photo'] != null ? () => showImageViewer(ctx, c['photo']?.toString()) : null,
+              child: Avatar(url: c['photo']?.toString(), name: customerName, size: 36),
+            ),
+            const SizedBox(height: 6),
             StatusChip(label: l['status']?.toString() ?? '', color: statusColor(l['status']?.toString())),
             const SizedBox(height: 4),
             Text(formatDate(l['startDate']), style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
