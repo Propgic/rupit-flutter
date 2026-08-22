@@ -35,6 +35,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   DateTime _startDate = DateTime.now();
   // Explicit EMI start (first EMI due ON it); null = normal cycle — same as the web.
   DateTime? _emiStartDate;
+  // Set once the officer picks or clears an EMI start date themselves, which freezes the
+  // prefill below so their date isn't overwritten by a later change to the other terms.
+  bool _emiStartTouched = false;
   final _principal = TextEditingController();
   final _rate = TextEditingController();
   final _tenure = TextEditingController();
@@ -58,7 +61,18 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   @override
   void initState() {
     super.initState();
+    _refreshEmiStartPrefill();
     _loadSuretyPolicy();
+  }
+
+  // Prefill the EMI Start Date with the start date itself, so collection begins the same day
+  // the money goes out. It follows the start date until the officer picks or clears a date
+  // themselves. (On a loan that only collects on certain days the backend snaps this forward
+  // to the first one — EmiStartDateTile shows where it lands.) Mirrors the web create form.
+  void _refreshEmiStartPrefill() {
+    if (_emiStartTouched) return;
+    // Accrual (khata) loans have no EMI schedule to anchor.
+    _emiStartDate = _accrual ? null : dayOnly(_startDate);
   }
 
   Future<void> _loadSuretyPolicy() async {
@@ -509,6 +523,7 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                           _deductUpfront = false;
                           _interestType = 'FLAT';
                         }
+                        _refreshEmiStartPrefill();
                       }),
                     ),
                   ],
@@ -616,7 +631,12 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                         lastDate: DateTime.now().add(const Duration(days: 30)),
                         initialDate: _startDate,
                       );
-                      if (d != null) setState(() => _startDate = d);
+                      if (d != null) {
+                        setState(() {
+                          _startDate = d;
+                          _refreshEmiStartPrefill();
+                        });
+                      }
                     },
                   ),
                   if (!_accrual)
@@ -624,7 +644,10 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                       startDate: _startDate,
                       emiStart: _emiStartDate,
                       collectionDays: _emiSnapDays,
-                      onChanged: (d) => setState(() => _emiStartDate = d),
+                      onChanged: (d) => setState(() {
+                        _emiStartDate = d;
+                        _emiStartTouched = true;
+                      }),
                     ),
                   if (_isGroupLoan) ...[
                     Row(
