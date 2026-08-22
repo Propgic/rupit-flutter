@@ -456,3 +456,59 @@ Future<bool> confirmDialog(BuildContext context, {String title = 'Confirm', requ
   );
   return res == true;
 }
+
+/// One segment of a list page's status tab strip (Active / Closed / All …).
+/// Shared by the loans and chitfunds lists so every list reads the same.
+class StatusPill extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const StatusPill({super.key, required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        margin: const EdgeInsets.symmetric(horizontal: 3),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary.withValues(alpha: 0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: selected ? AppColors.primary : AppColors.border),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: selected ? AppColors.primary : AppColors.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fixed-height sliver header, used to pin a status pill strip above a list while
+/// the rest of the page chrome (search, filters, metrics) scrolls away.
+class PinnedHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final double height;
+  final Widget child;
+  PinnedHeaderDelegate({required this.height, required this.child});
+
+  @override
+  double get minExtent => height;
+  @override
+  double get maxExtent => height;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) =>
+      SizedBox.expand(child: child);
+
+  @override
+  bool shouldRebuild(covariant PinnedHeaderDelegate oldDelegate) =>
+      oldDelegate.height != height || oldDelegate.child != child;
+}

@@ -177,6 +177,8 @@ class LoanPreviewPage extends ConsumerStatefulWidget {
   final String? assigneeLabel;
   final DateTime startDate;
   final String rateText;
+  /// Explicit first-EMI date (already snapped onto the collection day); null = normal cycle.
+  final DateTime? firstEmiDate;
   const LoanPreviewPage({
     super.key,
     required this.body,
@@ -186,6 +188,7 @@ class LoanPreviewPage extends ConsumerStatefulWidget {
     required this.assigneeLabel,
     required this.startDate,
     required this.rateText,
+    this.firstEmiDate,
   });
 
   @override
@@ -200,18 +203,22 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
 
   bool get _accrual => widget.body['interestAccrual'] == true;
 
+  // The last installment: tenure periods after the start date on the normal cycle, or —
+  // with an explicit first-EMI date — tenure−1 periods after that date (matches backend).
   DateTime get _endDate {
     final p = widget.preview;
-    final s = widget.startDate;
+    final first = widget.firstEmiDate;
+    final s = first ?? widget.startDate;
+    final n = first == null ? p.tenure : p.tenure - 1;
     switch (p.unitWord) {
       case 'day':
-        return s.add(Duration(days: p.tenure));
+        return s.add(Duration(days: n));
       case 'week':
-        return s.add(Duration(days: p.tenure * 7));
+        return s.add(Duration(days: n * 7));
       case 'year':
-        return DateTime(s.year + p.tenure, s.month, s.day);
+        return DateTime(s.year + n, s.month, s.day);
       default: // month
-        return DateTime(s.year, s.month + p.tenure, s.day);
+        return DateTime(s.year, s.month + n, s.day);
     }
   }
 
@@ -269,6 +276,8 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
                         ? 'Open-ended (interest monthly)'
                         : '${p.tenure} ${p.unitWord}${p.tenure == 1 ? '' : 's'}'),
                 KeyValueRow(label: 'Start Date', value: formatDate(widget.startDate.toIso8601String())),
+                if (!_accrual && widget.firstEmiDate != null)
+                  KeyValueRow(label: 'First EMI Date', value: formatDate(widget.firstEmiDate)),
                 KeyValueRow(
                     label: _accrual ? 'Interest From' : 'End Date',
                     value: _accrual

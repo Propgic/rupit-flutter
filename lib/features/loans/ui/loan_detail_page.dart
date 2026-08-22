@@ -9,9 +9,11 @@ import '../../../core/auth/auth_controller.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
+import '../data/loan_dates.dart';
 import '../data/loan_repo.dart';
 import '../../loan_groups/data/loan_group_repo.dart';
 import '../../team/data/team_repo.dart';
+import 'emi_start_date_tile.dart';
 
 final loanDetailProvider = FutureProvider.autoDispose.family<Map<String, dynamic>, String>((ref, id) async {
   return ref.read(loanRepoProvider).get(id);
@@ -377,11 +379,14 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                 KeyValueRow(label: 'ALR', value: l['alr'].toString()),
               KeyValueRow(label: 'Start Date', value: formatDate(l['startDate'])),
               KeyValueRow(label: 'Disbursed', value: formatDate(l['disbursedDate'])),
+              if (!accrual && l['emiSchedule'] is List && (l['emiSchedule'] as List).isNotEmpty)
+                KeyValueRow(label: 'First EMI', value: formatDate(((l['emiSchedule'] as List).first as Map)['dueDate'])),
               KeyValueRow(label: accrual ? 'Interest Charged Through' : 'End Date', value: formatDate(l['endDate'])),
               if (l['disbursedDate'] != null)
                 KeyValueRow(
                   label: l['loanType'] == 'WEEKLY' || l['loanType'] == 'GROUP' ? 'Week' : 'Day',
-                  value: dayWeekLabel(l['disbursedDate'], l['loanType']?.toString()),
+                  value: dayWeekLabel(l['disbursedDate'],
+                      l['loanType']?.toString(), l['installmentsElapsed']),
                   valueColor: const Color(0xFFEA580C),
                 ),
             ],
@@ -1152,6 +1157,8 @@ class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
   late bool _deductUpfront;
   late DateTime _startDate;
   late List<int> _collectionDays;
+  // Explicit EMI start (first EMI due ON it); null = normal cycle — same as the web.
+  DateTime? _emiStartDate;
   final _principal = TextEditingController();
   final _tenure = TextEditingController();
   final _rate = TextEditingController();
@@ -1180,6 +1187,8 @@ class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
     _interestType = l['interestType']?.toString() == 'FLAT' ? 'FLAT' : 'REDUCING';
     _deductUpfront = l['deductInterestUpfront'] == true;
     _startDate = DateTime.tryParse(l['startDate']?.toString() ?? '') ?? DateTime.now();
+    // Null = normal cycle; a stored date (the start date itself included) is explicit.
+    _emiStartDate = DateTime.tryParse(l['emiStartDate']?.toString() ?? '');
     final days = (l['collectionDays'] is List)
         ? (l['collectionDays'] as List).map((e) => toNum(e).toInt()).toList()
         : <int>[];
@@ -1331,6 +1340,9 @@ class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
     if (groupRequired && _group == null) {
       return showToast('Select a loan group', error: true);
     }
+    if (_fullEdit && emiStartError(_emiStartDate, _startDate) != null) {
+      return showToast('EMI start date cannot be before the disbursement date', error: true);
+    }
     setState(() => _saving = true);
     try {
       final body = <String, dynamic>{
@@ -1352,6 +1364,8 @@ class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
           'interestType': _interestType,
           'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
           'startDate': formatInputDate(_startDate),
+          // Always sent (null = normal cycle) so an explicit EMI start can be cleared.
+          'emiStartDate': _emiStartDate == null ? null : formatInputDate(_emiStartDate!),
           // Collection days only apply to DAILY/WEEKLY; null clears them for other
           // types so the backend rebuilds a standard schedule, not a day-filtered one.
           'collectionDays': _isInstallment ? _collectionDays : null,
@@ -1477,6 +1491,12 @@ class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
                   if (d != null) setState(() => _startDate = d);
                 },
               ),
+              EmiStartDateTile(
+                startDate: _startDate,
+                emiStart: _emiStartDate,
+                collectionDays: _collectionDays,
+                onChanged: (d) => setState(() => _emiStartDate = d),
+              ),
               // Interest method applies to every term loan; the DAILY/WEEKLY loan
               // types are fixed flat-upfront and the backend normalizes them.
               if (!_isInstallment) ...[
@@ -1596,14 +1616,17 @@ class _EditLoanSheetState extends ConsumerState<_EditLoanSheet> {
                     decoration: const InputDecoration(labelText: 'Processing Fee', prefixText: '₹ '),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextFormField(
-                    controller: _alr,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'ALR', prefixText: '₹ '),
+                // ALR is a group-loan figure — offered only for GROUP loans, same as create.
+                if (_loanType == 'GROUP') ...[
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _alr,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'ALR', prefixText: '₹ '),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
             const SizedBox(height: 10),
@@ -1674,6 +1697,8 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
   late bool _deductUpfront;
   late DateTime _startDate;
   late List<int> _collectionDays;
+  // Explicit EMI start (first EMI due ON it); null = normal cycle — same as the web.
+  DateTime? _emiStartDate;
   final _principal = TextEditingController();
   final _rate = TextEditingController();
   final _tenure = TextEditingController();
@@ -1690,6 +1715,8 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
     _interestType = l['interestType']?.toString() == 'FLAT' ? 'FLAT' : 'REDUCING';
     _deductUpfront = l['deductInterestUpfront'] == true;
     _startDate = DateTime.tryParse(l['startDate']?.toString() ?? '') ?? DateTime.now();
+    // Null = normal cycle; a stored date (the start date itself included) is explicit.
+    _emiStartDate = DateTime.tryParse(l['emiStartDate']?.toString() ?? '');
     final days = (l['collectionDays'] is List)
         ? (l['collectionDays'] as List).map((e) => toNum(e).toInt()).toList()
         : <int>[];
@@ -1748,6 +1775,9 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
     if (reason.length < 5) {
       return showToast('Enter a reason (at least 5 characters)', error: true);
     }
+    if (emiStartError(_emiStartDate, _startDate) != null) {
+      return showToast('EMI start date cannot be before the disbursement date', error: true);
+    }
     setState(() => _saving = true);
     try {
       final body = <String, dynamic>{
@@ -1761,6 +1791,7 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
         if (!_isInstallment) 'interestType': _interestType,
         if (!_isInstallment) 'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
         'startDate': formatInputDate(_startDate),
+        'emiStartDate': _emiStartDate == null ? null : formatInputDate(_emiStartDate!),
         if (_fee.text.trim().isNotEmpty) 'processingFee': double.tryParse(_fee.text.trim()),
         // Collection days only apply to DAILY/WEEKLY; null clears them for other types.
         'collectionDays': _isInstallment ? _collectionDays : null,
@@ -1916,6 +1947,12 @@ class _CorrectTermsSheetState extends ConsumerState<_CorrectTermsSheet> {
                 );
                 if (d != null) setState(() => _startDate = d);
               },
+            ),
+            EmiStartDateTile(
+              startDate: _startDate,
+              emiStart: _emiStartDate,
+              collectionDays: _collectionDays,
+              onChanged: (d) => setState(() => _emiStartDate = d),
             ),
             TextFormField(
               controller: _fee,

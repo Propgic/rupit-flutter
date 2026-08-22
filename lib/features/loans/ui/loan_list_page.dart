@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/auth/auth_controller.dart';
 import '../../../core/theme/app_theme.dart';
@@ -529,7 +530,7 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
             // summary has scrolled away. Extent tracks the user's text scale.
             SliverPersistentHeader(
               pinned: true,
-              delegate: _PinnedHeaderDelegate(
+              delegate: PinnedHeaderDelegate(
                 height: 34 + MediaQuery.textScalerOf(context).scale(18),
                 child: Container(
                   color: AppColors.bg,
@@ -538,7 +539,7 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
                     children: [
                       for (final pill in statusPills) ...[
                         Expanded(
-                          child: _StatusPill(
+                          child: StatusPill(
                             label: pill[1],
                             selected: _statusTab == pill[0],
                             onTap: () {
@@ -591,7 +592,9 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
     final l = _items[i];
     final c = Map<String, dynamic>.from(l['customer'] ?? {});
     final customerName = '${c['firstName'] ?? ''} ${c['lastName'] ?? ''}'.trim();
-    final dayWeek = dayWeekLabel(l['disbursedDate'], l['loanType']?.toString());
+    final phone = (c['phone'] ?? c['alternatePhone'] ?? '').toString().trim();
+    final dayWeek = dayWeekLabel(
+        l['disbursedDate'], l['loanType']?.toString(), l['installmentsElapsed']);
     final timeline = <String>[
       if (dayWeek != '-') dayWeek,
       if (l['endDate'] != null) 'Ends ${formatDate(l['endDate'])}',
@@ -605,6 +608,25 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(customerName, style: const TextStyle(fontWeight: FontWeight.w500)),
+            // Tapping the number dials it; the InkWell swallows the tap so it
+            // doesn't fall through to the tile and open the loan instead.
+            if (phone.isNotEmpty)
+              InkWell(
+                onTap: () => launchUrl(Uri.parse('tel:$phone')),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.phone, size: 13, color: AppColors.primary),
+                      const SizedBox(width: 4),
+                      Text(phone,
+                          style: const TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+              ),
             Text('${l['loanType'] ?? ''} • ${formatCurrency(l['principalAmount'])}',
                 style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
             Text('Balance: ${formatCurrency(l['balance'])}',
@@ -662,25 +684,6 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
 
 /// Fixed-extent pinned header with an opaque background so the loan cards
 /// don't show through as they scroll underneath.
-class _PinnedHeaderDelegate extends SliverPersistentHeaderDelegate {
-  final double height;
-  final Widget child;
-  _PinnedHeaderDelegate({required this.height, required this.child});
-
-  @override
-  double get minExtent => height;
-  @override
-  double get maxExtent => height;
-
-  @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) =>
-      SizedBox.expand(child: child);
-
-  @override
-  bool shouldRebuild(covariant _PinnedHeaderDelegate oldDelegate) =>
-      oldDelegate.height != height || oldDelegate.child != child;
-}
-
 /// Tappable date field for the filter sheet; shows the picked date (or "Any") and
 /// a clear button once a date is set.
 class _SheetDateField extends StatelessWidget {
@@ -708,39 +711,6 @@ class _SheetDateField extends StatelessWidget {
           style: TextStyle(
             fontSize: 14,
             color: value != null ? AppColors.textPrimary : AppColors.textSecondary,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusPill extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  const _StatusPill({required this.label, required this.selected, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        margin: const EdgeInsets.symmetric(horizontal: 3),
-        decoration: BoxDecoration(
-          color: selected ? AppColors.primary.withValues(alpha: 0.12) : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: selected ? AppColors.primary : AppColors.border),
-        ),
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: selected ? AppColors.primary : AppColors.textSecondary,
           ),
         ),
       ),

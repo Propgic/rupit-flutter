@@ -48,10 +48,17 @@ String formatInputDate(DateTime d) => _inputDate.format(d);
 /// Group loans are always weekly lines, so they count in weeks like WEEKLY loans.
 const _weeklyLoanTypes = {'WEEKLY', 'GROUP'};
 
-/// Age of a loan since disbursement, mirroring formatLoanAge() in the web app's
-/// formatters.js: the disbursement day itself is Day 1 / Week 1. Returns '-'
-/// when there is no disbursement date or the loan hasn't started yet.
-String dayWeekLabel(dynamic disbursedDate, String? loanType) {
+/// How far into its repayment a loan is, mirroring formatLoanAge() in the web
+/// app's formatters.js. Daily loans count calendar age — the disbursement day
+/// itself is Day 1. Weekly ones count INSTALLMENTS instead: the disbursement week
+/// is Week 0 (nothing has fallen due yet) and the number ticks to 1 on the day the
+/// first installment is due — the week the field speaks in, and what the group
+/// screen shows as "Week 12 / 20". The server sends that count
+/// (`installmentsElapsed`); without it — an older payload, or a loan carrying no
+/// schedule — fall back to the same convention off the disbursement date.
+/// Returns '-' when there is no disbursement date or the loan hasn't started yet.
+String dayWeekLabel(dynamic disbursedDate, String? loanType,
+    [dynamic installmentsElapsed]) {
   if (disbursedDate == null) return '-';
   DateTime d;
   try {
@@ -61,7 +68,13 @@ String dayWeekLabel(dynamic disbursedDate, String? loanType) {
   }
   final days = DateTime.now().difference(d).inDays + 1;
   if (days <= 0) return '-';
-  if (_weeklyLoanTypes.contains(loanType)) return 'Week ${(days / 7).ceil()}';
+  if (_weeklyLoanTypes.contains(loanType)) {
+    final elapsed = installmentsElapsed is num
+        ? installmentsElapsed.toInt()
+        : int.tryParse(installmentsElapsed?.toString() ?? '');
+    if (elapsed != null) return 'Week $elapsed';
+    return 'Week ${(days - 1) ~/ 7}';
+  }
   return 'Day $days';
 }
 

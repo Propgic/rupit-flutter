@@ -85,11 +85,14 @@ int? currentChitMonth(dynamic startDate) {
 // map, i.e. GET /chitfunds/:id). Shared by this page's Record-Payment action and the
 // field-agent Record Collection form, so both drive the same month/member/dues flow and the
 // same POST /chitfunds/:id/payments → Collection pipeline. [onRecorded] fires after each save.
+// [includeAdvance] additionally offers NEXT month in the month picker for members paying
+// early — like web, only the Record-Collection form asks for it.
 Future<void> openChitCollectionSheet(
   BuildContext context,
   WidgetRef ref, {
   required Map<String, dynamic> chitfund,
   VoidCallback? onRecorded,
+  bool includeAdvance = false,
 }) async {
   final chitfundId = chitfund['id'].toString();
   final members = await ref.read(chitfundRepoProvider).members(chitfundId);
@@ -108,6 +111,7 @@ Future<void> openChitCollectionSheet(
       chitfund: chitfund,
       members: members,
       initialMonth: initialMonth,
+      includeAdvance: includeAdvance,
       onRecorded: onRecorded ?? () {},
     ),
   );
@@ -326,6 +330,151 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
     } on ApiException catch (e) { showToast(e.message, error: true); }
   }
 
+  // Close = ACTIVE → COMPLETED. The detail payload carries `closeReadiness` (admin-only):
+  // every auction done, ₹0 dues, nothing awaiting verification, payouts settled, profit
+  // withdrawn. When not ready, show the checklist instead of a confirm; the backend
+  // re-checks on the call regardless.
+  Future<void> _closeChitfund(Map<String, dynamic> c) async {
+    final readiness = c['closeReadiness'] is Map ? Map<String, dynamic>.from(c['closeReadiness'] as Map) : null;
+    final checks = ((readiness?['checks'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    final ready = readiness?['ready'] == true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(ready ? 'Close chitfund?' : 'Not ready to close'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(ready
+                  ? 'This marks the chit as completed and freezes payments, auctions, payouts and profit withdrawals. An admin can reopen it later if needed.'
+                  : 'Settle the items below before closing this chit.'),
+              if (checks.isNotEmpty) const SizedBox(height: 12),
+              ..._readinessChecks(checks),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(ready ? 'Cancel' : 'OK')),
+          if (ready) FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Close chitfund')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _doAction(() => ref.read(chitfundRepoProvider).complete(widget.id), 'Chitfund closed');
+    }
+  }
+
+  // One row per close blocker: ✓/✗, the check's label and its live message
+  // ("₹3,94,850 of member dues still outstanding"). Shared by the close dialog and
+  // the info tab's readiness card so both always say the same thing.
+  List<Widget> _readinessChecks(List<Map<String, dynamic>> checks) => [
+        for (final k in checks)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  k['ok'] == true ? Icons.check_circle : Icons.cancel,
+                  size: 18,
+                  color: k['ok'] == true ? AppColors.accent : AppColors.danger,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(k['label']?.toString() ?? '',
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      Text(
+                        k['message']?.toString() ?? '',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: k['ok'] == true ? AppColors.textMuted : AppColors.danger,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ];
+
+  // Readiness banner at the top of the info tab, mirroring the web detail page's
+  // card. Only rendered when the payload carries `closeReadiness` — the backend
+  // sends it to ORG_ADMIN on ACTIVE chits — and only once every month has been
+  // auctioned, so a mid-term chit isn't nagged about dues it hasn't billed yet.
+  Widget? _closeReadinessCard(Map<String, dynamic> c) {
+    if (c['closeReadiness'] is! Map) return null;
+    final duration = toNum(c['durationMonths']).toInt();
+    final auctions = (c['auctions'] as List?) ?? const [];
+    final done = auctions.where((a) => a is Map && a['status'] == 'COMPLETED' && a['isExtra'] != true).length;
+    if (duration <= 0 || done < duration) return null;
+
+    final readiness = Map<String, dynamic>.from(c['closeReadiness'] as Map);
+    final ready = readiness['ready'] == true;
+    final checks = ((readiness['checks'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    return Card(
+      color: (ready ? AppColors.accent : AppColors.warning).withValues(alpha: 0.10),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(ready ? Icons.lock_outline : Icons.pending_actions,
+                    size: 18, color: ready ? AppColors.accent : AppColors.warning),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(ready ? 'Ready to close' : 'Not ready to close yet',
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              ready
+                  ? 'Every auction is done, all dues and payouts are settled and all profit has been withdrawn.'
+                  : 'All auctions are done. Settle the items below to close this chit.',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            ..._readinessChecks(checks),
+            const SizedBox(height: 4),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: ready ? () => _closeChitfund(c) : null,
+                icon: const Icon(Icons.lock_outline, size: 18),
+                label: const Text('Close chitfund'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _reopenChitfund() async {
+    final ok = await confirmDialog(
+      context,
+      title: 'Reopen chitfund?',
+      message: 'This sets the chit back to Active so payments, payouts and withdrawals can be edited again.',
+      confirmText: 'Reopen',
+    );
+    if (ok) await _doAction(() => ref.read(chitfundRepoProvider).reopen(widget.id), 'Chitfund reopened');
+  }
+
   // Dashboard deep-link: once the member list is available, pop the target member's
   // transactions popup exactly once (one-shot — a later reload won't reopen it).
   void _maybeOpenDeepLinkMember() {
@@ -391,6 +540,13 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
     // Per-role action visibility (Settings → Chitfund Settings).
     final showEdit = !auth.isHidden('chitfund.edit');
     final showReassign = !auth.isHidden('chitfund.reassign');
+    // Closing is admin-only and only offered once every scheduled month has been
+    // auctioned; the dialog it opens lists what's still blocking (dues, payouts, profit…).
+    final isAdmin = auth.hasRole('ORG_ADMIN');
+    final duration = toNum(c['durationMonths']).toInt();
+    final auctions = (c['auctions'] as List?) ?? const [];
+    final allAuctionsDone = duration > 0 &&
+        auctions.where((a) => a is Map && a['status'] == 'COMPLETED' && a['isExtra'] != true).length >= duration;
     return PopupMenuButton<String>(
       onSelected: (v) {
         switch (v) {
@@ -398,7 +554,10 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
             _doAction(() => ref.read(chitfundRepoProvider).start(widget.id), 'Started');
             break;
           case 'complete':
-            _doAction(() => ref.read(chitfundRepoProvider).complete(widget.id), 'Completed');
+            _closeChitfund(c);
+            break;
+          case 'reopen':
+            _reopenChitfund();
             break;
           case 'add_member':
             _addMember();
@@ -435,7 +594,9 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
         if (status == 'ACTIVE') const PopupMenuItem(value: 'final_dues', child: Text('Final Dues')),
         if (status == 'ACTIVE' && surplusOverflow)
           const PopupMenuItem(value: 'extra_auction', child: Text('Extra Auction')),
-        if (status == 'ACTIVE') const PopupMenuItem(value: 'complete', child: Text('Complete')),
+        if (status == 'ACTIVE' && isAdmin && allAuctionsDone)
+          const PopupMenuItem(value: 'complete', child: Text('Close chitfund')),
+        if (status == 'COMPLETED' && isAdmin) const PopupMenuItem(value: 'reopen', child: Text('Reopen chitfund')),
       ],
     );
   }
@@ -443,9 +604,11 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
   Widget _infoTab(Map<String, dynamic> c) {
     final dividendType = c['dividendType']?.toString() ?? 'SPLIT';
     final showTotalCollected = !ref.read(authProvider).isHidden('chitfund.totalCollected');
+    final readinessCard = _closeReadinessCard(c);
     return ListView(
       padding: const EdgeInsets.all(14),
       children: [
+        ?readinessCard,
         Card(
           child: Padding(
             padding: const EdgeInsets.all(14),
@@ -1065,6 +1228,9 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
   Widget _payoutsTab(Map<String, dynamic> c) {
     final p = ref.watch(chitfundPayoutsProvider(widget.id));
     final memberById = _memberById();
+    // Settling / unsettling is frozen on a closed chit (the backend refuses it), so
+    // don't offer the buttons — same rule as the web payouts column.
+    final notClosed = c['status'] != 'COMPLETED';
     return p.when(
       loading: () => const LoadingView(),
       error: (e, _) => ErrorView(message: e.toString()),
@@ -1075,8 +1241,8 @@ class _ChitfundDetailPageState extends ConsumerState<ChitfundDetailPage> with Si
           itemBuilder: (ctx, i) {
             final po = Map<String, dynamic>.from(items[i] as Map);
             final isPaid = po['status'] == 'PAID';
-            final showSettle = _canManage && !isPaid;
-            final showUnsettle = _canManage && isPaid && _canUnsettlePayout(po);
+            final showSettle = _canManage && notClosed && !isPaid;
+            final showUnsettle = _canManage && notClosed && isPaid && _canUnsettlePayout(po);
             final mem = memberById[po['chitfundMemberId']?.toString()];
             final cust = mem != null && mem['customer'] != null ? Map<String, dynamic>.from(mem['customer'] as Map) : {};
             final winnerLabel = mem != null
@@ -1397,12 +1563,15 @@ class _PaymentSheet extends ConsumerStatefulWidget {
   final Map<String, dynamic> chitfund;
   final List<dynamic> members;
   final int initialMonth;
+  // Offer the month after the current calendar month (flagged `advance`) for early payers.
+  final bool includeAdvance;
   final VoidCallback onRecorded;
   const _PaymentSheet({
     required this.chitfundId,
     required this.chitfund,
     required this.members,
     required this.initialMonth,
+    required this.includeAdvance,
     required this.onRecorded,
   });
   @override
@@ -1455,7 +1624,9 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
   // in-progress month). Mirrors the web Record-Collection month picker.
   Future<void> _loadCollectable() async {
     try {
-      final list = await ref.read(chitfundRepoProvider).collectionSummary(widget.chitfundId);
+      final list = await ref
+          .read(chitfundRepoProvider)
+          .collectionSummary(widget.chitfundId, includeAdvance: widget.includeAdvance);
       if (!mounted) return;
       final cm = _chitCurrentMonth;
       // Show every month that still has dues, plus the current calendar month itself even
@@ -1473,7 +1644,10 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
         // past its duration and there's no current month to land on).
         if (months.isNotEmpty && !months.any((m) => toNum(m['monthNumber']).toInt() == _month)) {
           final hasCurrent = cm != null && months.any((m) => toNum(m['monthNumber']).toInt() == cm);
-          _month = hasCurrent ? cm : toNum(months.last['monthNumber']).toInt();
+          // Never land on the advance month — it exists for explicit advance payments only.
+          final due = months.where((m) => m['advance'] != true).toList();
+          final pool = due.isNotEmpty ? due : months;
+          _month = hasCurrent ? cm : toNum(pool.last['monthNumber']).toInt();
           _load(_month);
         }
       });
@@ -1671,7 +1845,13 @@ class _PaymentSheetState extends ConsumerState<_PaymentSheet> {
                       final tags = <String>[];
                       if (m == toNum(c['calendarMonth'] ?? c['currentMonth']).toInt()) tags.add('current');
                       if (m == _duration) tags.add('final');
-                      if (mm['auctioned'] == false) tags.add('auction pending');
+                      // An advance month's auction can't have run yet, so it reads as
+                      // "advance" rather than "auction pending".
+                      if (mm['advance'] == true) {
+                        tags.add('advance');
+                      } else if (mm['auctioned'] == false) {
+                        tags.add('auction pending');
+                      }
                       return DropdownMenuItem(value: m, child: Text('Month $m${tags.isNotEmpty ? ' — ${tags.join(', ')}' : ''}'));
                     }).toList()
                   : List.generate(_visibleMonths, (i) {

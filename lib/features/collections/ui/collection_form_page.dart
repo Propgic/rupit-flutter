@@ -159,7 +159,9 @@ class _CollectionFormPageState extends ConsumerState<CollectionFormPage> {
       return;
     }
     if (!mounted) return;
-    await openChitCollectionSheet(context, ref, chitfund: detail);
+    // Advance (next-month) collections are offered here only — the Record-Collection
+    // form is the one screen that takes an early payment, matching web.
+    await openChitCollectionSheet(context, ref, chitfund: detail, includeAdvance: true);
   }
 
   void _onLoanScroll() {

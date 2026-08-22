@@ -7,6 +7,8 @@ import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/common.dart';
 import '../../customers/data/customer_repo.dart';
 import '../../loan_groups/data/loan_group_repo.dart';
+import '../data/loan_dates.dart';
+import 'emi_start_date_tile.dart';
 import 'loan_preview_page.dart';
 
 class LoanCreatePage extends ConsumerStatefulWidget {
@@ -31,6 +33,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   // month arrives. Offered only to khata-mode orgs.
   bool _accrual = false;
   DateTime _startDate = DateTime.now();
+  // Explicit EMI start (first EMI due ON it); null = normal cycle — same as the web.
+  DateTime? _emiStartDate;
   final _principal = TextEditingController();
   final _rate = TextEditingController();
   final _tenure = TextEditingController();
@@ -72,6 +76,17 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   String get _suretyPolicy => _suretyByType[_loanType] ?? 'OPTIONAL';
 
   bool get _isGroupLoan => _loanType == 'GROUP';
+
+  // Day filter the backend snaps an explicit EMI start onto: a weekly group loan collects
+  // on the group's meeting day. (DAILY/WEEKLY types keep the backend's default days here —
+  // this form has no day picker — so no filter is known for them.)
+  List<int> get _emiSnapDays {
+    if (_isGroupLoan && _tenureType == 'WEEKS') {
+      final i = meetingDayIndex(_group?['meetingDay']);
+      if (i != null) return [i];
+    }
+    return const [];
+  }
 
   // DAILY/WEEKLY loan TYPES are fixed flat-upfront — the method picker is only for term loans.
   bool get _showInterestMethod => _loanType != 'DAILY' && _loanType != 'WEEKLY' && !_accrual;
@@ -275,6 +290,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
     if (_customers.isEmpty) {
       return showToast(_isGroupLoan ? 'Select at least one customer' : 'Select a customer', error: true);
     }
+    if (!_accrual && emiStartError(_emiStartDate, _startDate) != null) {
+      return showToast('EMI start date cannot be before the disbursement date', error: true);
+    }
     if (_assignee == null) {
       final proceed = await confirmDialog(
         context,
@@ -305,6 +323,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       if (_showInterestMethod) 'interestType': _interestType,
       if (_showInterestMethod) 'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
       'startDate': formatInputDate(_startDate),
+      // Omitted = normal cycle; a date (the start date itself included) = first EMI due on it.
+      if (!_accrual && _emiStartDate != null) 'emiStartDate': formatInputDate(_emiStartDate!),
       'processingFee': double.tryParse(_fee.text) ?? 0,
       'alr': _alr.text.trim().isEmpty ? null : double.tryParse(_alr.text.trim()),
       'lateFeePerDay': double.tryParse(_lateFee.text) ?? 0,
@@ -354,6 +374,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
         assigneeLabel: _assignee?['name']?.toString(),
         startDate: _startDate,
         rateText: _rate.text.trim(),
+        firstEmiDate: _accrual || _emiStartDate == null
+            ? null
+            : effectiveEmiStart(_emiStartDate!, _emiSnapDays),
       ),
     ));
   }
@@ -596,6 +619,13 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                       if (d != null) setState(() => _startDate = d);
                     },
                   ),
+                  if (!_accrual)
+                    EmiStartDateTile(
+                      startDate: _startDate,
+                      emiStart: _emiStartDate,
+                      collectionDays: _emiSnapDays,
+                      onChanged: (d) => setState(() => _emiStartDate = d),
+                    ),
                   if (_isGroupLoan) ...[
                     Row(
                       children: [

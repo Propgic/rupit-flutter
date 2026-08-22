@@ -5,10 +5,20 @@ class ChitfundRepo {
   final ApiClient api;
   ChitfundRepo(this.api);
 
-  Future<Map<String, dynamic>> list({int page = 1, int limit = 20, String? search, String? status}) async {
+  // `status` keeps only the listed statuses; `excludeStatus` filters them out (both
+  // accept a comma-separated list). The list page's All tab passes
+  // excludeStatus: 'COMPLETED' so closed chits stay on their own tab — same rule as web.
+  Future<Map<String, dynamic>> list({
+    int page = 1,
+    int limit = 20,
+    String? search,
+    String? status,
+    String? excludeStatus,
+  }) async {
     final q = <String, dynamic>{'page': page, 'limit': limit};
     if (search?.isNotEmpty ?? false) q['search'] = search;
     if (status?.isNotEmpty ?? false) q['status'] = status;
+    if (excludeStatus?.isNotEmpty ?? false) q['excludeStatus'] = excludeStatus;
     final res = await api.raw(() => api.dio.get('/chitfunds', queryParameters: q));
     return Map<String, dynamic>.from(res.data as Map);
   }
@@ -24,7 +34,11 @@ class ChitfundRepo {
   Future<void> assign(String id, String? fieldOfficerId) async =>
       api.patch('/chitfunds/$id/assign', data: {'assignedToId': fieldOfficerId});
   Future<void> start(String id) async => api.patch('/chitfunds/$id/start');
+  // Close (ACTIVE → COMPLETED). ORG_ADMIN only; the backend refuses with the list of
+  // blockers until every auction is done, dues/payouts are settled and profit is withdrawn.
   Future<void> complete(String id) async => api.patch('/chitfunds/$id/complete');
+  // Undo a close (COMPLETED → ACTIVE). ORG_ADMIN only.
+  Future<void> reopen(String id) async => api.patch('/chitfunds/$id/reopen');
 
   Future<List<dynamic>> members(String id) async {
     final d = await api.get('/chitfunds/$id/members');
@@ -80,9 +94,12 @@ class ChitfundRepo {
 
   // Per-month collection summary: auctioned months (plus the in-progress current month)
   // with collected/pending totals and a `fullyCollected` flag — used to offer only the
-  // months that still have dues in the Record-Payment month picker.
-  Future<List<dynamic>> collectionSummary(String id) async {
-    final d = await api.get('/chitfunds/$id/collection-summary');
+  // months that still have dues in the Record-Payment month picker. [includeAdvance] also
+  // asks for NEXT month (flagged `advance`) so a member paying early can be collected from;
+  // only the Record-Collection form opts in, matching web.
+  Future<List<dynamic>> collectionSummary(String id, {bool includeAdvance = false}) async {
+    final d = await api.get('/chitfunds/$id/collection-summary',
+        query: includeAdvance ? {'includeAdvance': 1} : null);
     if (d is Map && d['months'] is List) return List<dynamic>.from(d['months'] as List);
     return const [];
   }
