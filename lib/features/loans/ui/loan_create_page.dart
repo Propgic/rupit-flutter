@@ -38,6 +38,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   // Set once the officer picks or clears an EMI start date themselves, which freezes the
   // prefill below so their date isn't overwritten by a later change to the other terms.
   bool _emiStartTouched = false;
+  // Weekday a WEEKLY loan collects on (JS numbering, 0=Sun), defaulting to Monday as on
+  // the web. Sent as collectionDays so the schedule only lands on that day.
+  int _weeklyDay = 1;
   final _principal = TextEditingController();
   final _rate = TextEditingController();
   final _tenure = TextEditingController();
@@ -66,13 +69,21 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
   }
 
   // Prefill the EMI Start Date with the start date itself, so collection begins the same day
-  // the money goes out. It follows the start date until the officer picks or clears a date
-  // themselves. (On a loan that only collects on certain days the backend snaps this forward
-  // to the first one — EmiStartDateTile shows where it lands.) Mirrors the web create form.
+  // the money goes out — except on a weekly cadence, which only collects on its one fixed
+  // weekday: there it prefills the first such day AFTER the start date (disbursed Saturday,
+  // collects Mondays → the coming Monday; disbursed ON a Monday → the Monday a week later).
+  // It follows the start date until the officer picks or clears a date themselves. (On a
+  // DAILY loan that skips days the backend snaps this forward to the first collection day —
+  // EmiStartDateTile shows where it lands.) Mirrors the web create form.
   void _refreshEmiStartPrefill() {
     if (_emiStartTouched) return;
+    final dow = _weeklyCollectionDay;
     // Accrual (khata) loans have no EMI schedule to anchor.
-    _emiStartDate = _accrual ? null : dayOnly(_startDate);
+    _emiStartDate = _accrual
+        ? null
+        : dow == null
+            ? dayOnly(_startDate)
+            : nextWeekdayAfter(_startDate, dow);
   }
 
   Future<void> _loadSuretyPolicy() async {
@@ -91,15 +102,19 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
 
   bool get _isGroupLoan => _loanType == 'GROUP';
 
-  // Day filter the backend snaps an explicit EMI start onto: a weekly group loan collects
-  // on the group's meeting day. (DAILY/WEEKLY types keep the backend's default days here —
-  // this form has no day picker — so no filter is known for them.)
+  // The one weekday (0=Sun) a weekly-cadence loan collects on: the WEEKLY type's chosen day,
+  // or the group's meeting day for a group loan on a weekly cycle. null for any other cadence
+  // (a DAILY loan keeps the backend's default days — this form has no day picker for it).
+  int? get _weeklyCollectionDay {
+    if (_loanType == 'WEEKLY') return _weeklyDay;
+    if (_isGroupLoan && _tenureType == 'WEEKS') return meetingDayIndex(_group?['meetingDay']);
+    return null;
+  }
+
+  // Day filter the backend snaps an explicit EMI start onto.
   List<int> get _emiSnapDays {
-    if (_isGroupLoan && _tenureType == 'WEEKS') {
-      final i = meetingDayIndex(_group?['meetingDay']);
-      if (i != null) return [i];
-    }
-    return const [];
+    final dow = _weeklyCollectionDay;
+    return dow == null ? const [] : [dow];
   }
 
   // DAILY/WEEKLY loan TYPES are fixed flat-upfront — the method picker is only for term loans.
@@ -213,6 +228,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       setState(() {
         _group = picked;
         _applyGroupDefaults(picked);
+        // The group brings the meeting day the weekly schedule is anchored to.
+        _refreshEmiStartPrefill();
       });
       _prefillGroupAssignee(picked);
     }
@@ -333,6 +350,9 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
       'tenure': _accrual ? 1 : int.tryParse(_tenure.text),
       'tenureType': _accrual ? 'MONTHS' : _tenureType,
       if (_accrual) 'interestAccrual': true,
+      // A WEEKLY loan collects on one fixed weekday — without this the backend has no day
+      // filter and the schedule walks day by day instead of week by week.
+      if (_loanType == 'WEEKLY') 'collectionDays': [_weeklyDay],
       // Interest method (DAILY/WEEKLY types are normalized to flat-upfront by the backend).
       if (_showInterestMethod) 'interestType': _interestType,
       if (_showInterestMethod) 'deductInterestUpfront': _interestType == 'FLAT' && _deductUpfront,
@@ -427,6 +447,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                     ],
                     onChanged: (v) => setState(() {
                       _loanType = v!;
+                      // The cadence (and so the collection weekday) just changed.
+                      _refreshEmiStartPrefill();
                       if (_loanType != 'GROUP') {
                         _group = null;
                         // Leaving GROUP drops the batch down to one borrower so a
@@ -579,6 +601,8 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                             // reducing. The user can still override the method below.
                             _interestType = _isPeriodUnit ? 'FLAT' : 'REDUCING';
                             if (_interestType != 'FLAT') _deductUpfront = false;
+                            // A group loan only counts as weekly-cadence on WEEKS.
+                            _refreshEmiStartPrefill();
                           }),
                         ),
                       ),
@@ -619,6 +643,37 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                         onChanged: (v) => setState(() => _deductUpfront = v),
                       ),
                   ],
+                  if (_loanType == 'WEEKLY') ...[
+                    const SizedBox(height: 10),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('Collection Day (one per week)',
+                          style: Theme.of(context).textTheme.bodySmall),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        // Monday first, matching the web chips.
+                        for (final d in const [1, 2, 3, 4, 5, 6, 0])
+                          ChoiceChip(
+                            label: Text(weekdayNames[d].substring(0, 3)),
+                            selected: _weeklyDay == d,
+                            onSelected: (_) => setState(() {
+                              _weeklyDay = d;
+                              _refreshEmiStartPrefill();
+                            }),
+                          ),
+                      ],
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        'EMIs will be scheduled every week on ${weekdayNames[_weeklyDay].substring(0, 3)}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -644,6 +699,10 @@ class _LoanCreatePageState extends ConsumerState<LoanCreatePage> {
                       startDate: _startDate,
                       emiStart: _emiStartDate,
                       collectionDays: _emiSnapDays,
+                      prefillNote: _weeklyCollectionDay == null
+                          ? 'Prefilled with the start date, so the first EMI is due the same day.'
+                          : 'Prefilled with the first ${weekdayNames[_weeklyCollectionDay!]} after '
+                              'the start date, so that is when the first EMI falls due.',
                       onChanged: (d) => setState(() {
                         _emiStartDate = d;
                         _emiStartTouched = true;

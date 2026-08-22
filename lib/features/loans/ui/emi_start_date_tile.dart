@@ -14,6 +14,9 @@ class EmiStartDateTile extends StatelessWidget {
   final DateTime? emiStart;
   /// JS weekday numbers (0=Sun) the loan collects on; empty = no day filter.
   final List<int> collectionDays;
+  /// How an untouched date was prefilled — shown by the create form, which fills the field
+  /// in for the officer. Edit/correct load the loan's stored date and pass nothing.
+  final String? prefillNote;
   final ValueChanged<DateTime?> onChanged;
 
   const EmiStartDateTile({
@@ -22,6 +25,7 @@ class EmiStartDateTile extends StatelessWidget {
     required this.emiStart,
     required this.onChanged,
     this.collectionDays = const [],
+    this.prefillNote,
   });
 
   @override
@@ -44,6 +48,8 @@ class EmiStartDateTile extends StatelessWidget {
             'Pick a date — the start date itself included — and the first EMI falls due on it.',
             style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
+          if (prefillNote != null)
+            Text(prefillNote!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
           if (error != null)
             Text(error, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error)),
           if (snapHint != null)

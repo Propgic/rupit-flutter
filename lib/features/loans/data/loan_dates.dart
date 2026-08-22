@@ -20,6 +20,17 @@ int? meetingDayIndex(dynamic meetingDay) {
   return i < 0 ? null : i;
 }
 
+/// First [dow] weekday (0=Sun) strictly AFTER [from] — the collection day a weekly-cadence
+/// loan starts on when the officer hasn't picked an EMI start date themselves. Disbursing ON
+/// the collection day rolls to the next week, so no EMI ever falls the day the money goes out.
+DateTime nextWeekdayAfter(DateTime from, int dow) {
+  var d = DateTime(from.year, from.month, from.day + 1);
+  while (jsWeekday(d) != dow) {
+    d = DateTime(d.year, d.month, d.day + 1);
+  }
+  return d;
+}
+
 /// Where the first EMI will ACTUALLY fall when an explicit EMI start date is picked: the
 /// backend snaps it forward onto the loan's collection day(s) — a DAILY loan walks to the
 /// next selected day, a weekly-cadence loan (WEEKLY type / weekly group) to its fixed

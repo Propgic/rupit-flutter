@@ -276,13 +276,13 @@ class _LoanPreviewPageState extends ConsumerState<LoanPreviewPage> {
                         ? 'Open-ended (interest monthly)'
                         : '${p.tenure} ${p.unitWord}${p.tenure == 1 ? '' : 's'}'),
                 KeyValueRow(label: 'Start Date', value: formatDate(widget.startDate.toIso8601String())),
-                if (!_accrual && widget.firstEmiDate != null)
-                  KeyValueRow(label: 'First EMI Date', value: formatDate(widget.firstEmiDate)),
                 KeyValueRow(
                     label: _accrual ? 'Interest From' : 'End Date',
                     value: _accrual
                         ? formatDate(DateTime(widget.startDate.year, widget.startDate.month + 1, 1).toIso8601String())
                         : formatDate(_endDate.toIso8601String())),
+                if (!_accrual && widget.firstEmiDate != null)
+                  KeyValueRow(label: 'First EMI Date', value: formatDate(widget.firstEmiDate)),
                 if (!_accrual)
                   KeyValueRow(
                     label: p.upfront ? 'Upfront Interest (deducted)' : 'Total Interest',

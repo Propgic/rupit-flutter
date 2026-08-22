@@ -379,8 +379,6 @@ class _LoanDetailPageState extends ConsumerState<LoanDetailPage> with SingleTick
                 KeyValueRow(label: 'ALR', value: l['alr'].toString()),
               KeyValueRow(label: 'Start Date', value: formatDate(l['startDate'])),
               KeyValueRow(label: 'Disbursed', value: formatDate(l['disbursedDate'])),
-              if (!accrual && l['emiSchedule'] is List && (l['emiSchedule'] as List).isNotEmpty)
-                KeyValueRow(label: 'First EMI', value: formatDate(((l['emiSchedule'] as List).first as Map)['dueDate'])),
               KeyValueRow(label: accrual ? 'Interest Charged Through' : 'End Date', value: formatDate(l['endDate'])),
               if (l['disbursedDate'] != null)
                 KeyValueRow(
