@@ -595,11 +595,27 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
     final phone = (c['phone'] ?? c['alternatePhone'] ?? '').toString().trim();
     final dayWeek = dayWeekLabel(
         l['disbursedDate'], l['loanType']?.toString(), l['installmentsElapsed']);
+    // Start → end reads on the age line, which frees the trailing column to
+    // hold just the photo and the status chip.
+    final startDate = l['startDate'] ?? l['disbursedDate'];
     final timeline = <String>[
       if (dayWeek != '-') dayWeek,
+      if (startDate != null) formatDate(startDate),
       if (l['endDate'] != null) 'Ends ${formatDate(l['endDate'])}',
     ].join(' · ');
+    // Card tint mirrors the web list's row colours (LoanList.jsx rowClassName):
+    // a live loan that is fully paid reads green, one that has run past its end
+    // date (a 100-day daily loan still open on day 101, say) reads red.
+    final endDate = DateTime.tryParse(l['endDate']?.toString() ?? '');
+    final tint = l['status'] != 'ACTIVE'
+        ? null
+        : l['balance'] != null && toNum(l['balance']) == 0
+            ? AppColors.accent.withValues(alpha: 0.12)
+            : endDate != null && endDate.isBefore(DateTime.now())
+                ? AppColors.danger.withValues(alpha: 0.10)
+                : null;
     return Card(
+      color: tint,
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: ListTile(
         onTap: () => context.push('/loans/${l['id']}'),
@@ -661,20 +677,23 @@ class _LoanListPageState extends ConsumerState<LoanListPage> {
                   style: const TextStyle(fontSize: 11, color: AppColors.accent, fontWeight: FontWeight.w600)),
           ],
         ),
+        // Column sizes to the status chip, so centring lines the photo up over
+        // it instead of hanging off one edge.
         trailing: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             // Tapping the photo zooms it; without a photo the tap falls
             // through to the tile (same pattern as the customer list).
             GestureDetector(
               onTap: c['photo'] != null ? () => showImageViewer(ctx, c['photo']?.toString()) : null,
-              child: Avatar(url: c['photo']?.toString(), name: customerName, size: 36),
+              // 56 is the widest the photo can go without pushing the column
+              // past the status chip and stealing width from the text.
+              child: Avatar(url: c['photo']?.toString(), name: customerName, size: 56),
             ),
             const SizedBox(height: 6),
             StatusChip(label: l['status']?.toString() ?? '', color: statusColor(l['status']?.toString())),
-            const SizedBox(height: 4),
-            Text(formatDate(l['startDate']), style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
           ],
         ),
       ),
